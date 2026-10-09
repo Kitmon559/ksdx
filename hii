@@ -1,6 +1,6 @@
 -- // LocalScript в StarterPlayer.StarterPlayerScripts
--- // Подсветка + ESP + пикер цвета + Godmode + ТП (без возврата) + Anti-Move + SpeedHack
--- // FULL FIX (Luau-safe: forward declarations, UDim2, без глобалов)
+-- // Подсветка + ESP + пикер цвета + Godmode + ТП + Anti-Move + SpeedHack + бинды
+-- // FULL FIX: без спама "скорость изменена", HoleGiveMe hold 2 сек
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -148,8 +148,10 @@ if not config.espSize or not ESP_SIZES[config.espSize] then config.espSize = "С
 if not config.tpSpeed or not TP_SPEEDS[config.tpSpeed] then config.tpSpeed = "Быстро" end
 if config.customSpeed == nil then config.customSpeed = 0.1 end
 if config.useCustomSpeed == nil then config.useCustomSpeed = false end
-if config.menuWidth == nil then config.menuWidth = 480 end
-if config.menuHeight == nil then config.menuHeight = 560 end
+if config.menuWidth == nil then config.menuWidth = 520 end
+if config.menuHeight == nil then config.menuHeight = 620 end
+if type(config.menuKey) ~= "string" then config.menuKey = "G" end
+if type(config.speedKey) ~= "string" then config.speedKey = "F" end
 
 local selectedByNorm = {}
 local knownNamesSet = {}
@@ -241,6 +243,72 @@ local godBtn
 local toggleBtn
 local espBtn
 local namesBtn
+local menuKeyBtn
+local speedKeyBtn
+
+-- ================== HOLE GIVE ME HOOK ==================
+local holeGiveMeBusy = false
+local holeGiveMeHookInstalled = false
+
+local function tryHookHoleGiveMe()
+    if holeGiveMeHookInstalled then return end
+    local rs = game:GetService("ReplicatedStorage")
+    local remotes = rs:FindFirstChild("Remotes")
+    local event = remotes and remotes:FindFirstChild("HoleGiveMe")
+    if not event then return end
+
+    local HOLD_TIME = 2
+
+    local function markBusy()
+        holeGiveMeBusy = true
+        task.delay(HOLD_TIME, function()
+            holeGiveMeBusy = false
+        end)
+    end
+
+    if hookfunction and newcclosure then
+        local ok = pcall(function()
+            local oldInvoke = event.InvokeServer
+            event.InvokeServer = newcclosure(function(self, ...)
+                markBusy()
+                return oldInvoke(self, ...)
+            end)
+        end)
+        if ok then
+            holeGiveMeHookInstalled = true
+            print("[ItemHighlight] HoleGiveMe hook установлен (hookfunction)")
+            return
+        end
+    end
+
+    if hookmetamethod and getnamecallmethod and newcclosure then
+        local ok = pcall(function()
+            local mt = getrawmetatable(game)
+            local oldNamecall = mt.__namecall
+            setreadonly(mt, false)
+            mt.__namecall = newcclosure(function(self, ...)
+                local method = getnamecallmethod()
+                if method == "InvokeServer" and self == event then
+                    markBusy()
+                end
+                return oldNamecall(self, ...)
+            end)
+            setreadonly(mt, true)
+        end)
+        if ok then
+            holeGiveMeHookInstalled = true
+            print("[ItemHighlight] HoleGiveMe hook установлен (hookmetamethod)")
+        end
+    end
+end
+
+task.spawn(function()
+    for _ = 1, 30 do
+        tryHookHoleGiveMe()
+        if holeGiveMeHookInstalled then break end
+        task.wait(1)
+    end
+end)
 
 -- ================== GODMODE ==================
 local remotesFolder = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
@@ -303,7 +371,7 @@ local function stopSpeedHackLoop()
     end
 end
 
--- mode: "user" | "auto"
+-- mode: "user" | "auto" (auto = тихо, без уведомления)
 local function setSpeedHack(state, mode)
     mode = mode or "user"
     config.speedHack = state
@@ -322,12 +390,17 @@ local function setSpeedHack(state, mode)
             if not config.speedHack then return end
             local h = getHumanoid()
             if not h then return end
-            if h.WalkSpeed ~= SPEEDHACK_VALUE then
-                setSpeedHack(false, "auto")
-                if pushNotification then
-                    pushNotification("SpeedHack: авто-выкл (скорость изменена)",
-                        Color3.fromRGB(255, 140, 60))
+
+            if holeGiveMeBusy then
+                if h.WalkSpeed ~= SPEEDHACK_VALUE then
+                    h.WalkSpeed = SPEEDHACK_VALUE
                 end
+                return
+            end
+
+            if h.WalkSpeed ~= SPEEDHACK_VALUE then
+                -- тихое авто-выключение, без уведомления
+                setSpeedHack(false, "auto")
             end
         end)
 
@@ -362,12 +435,16 @@ player.CharacterAdded:Connect(function(char)
                 if not config.speedHack then return end
                 local h = getHumanoid()
                 if not h then return end
+
+                if holeGiveMeBusy then
+                    if h.WalkSpeed ~= SPEEDHACK_VALUE then
+                        h.WalkSpeed = SPEEDHACK_VALUE
+                    end
+                    return
+                end
+
                 if h.WalkSpeed ~= SPEEDHACK_VALUE then
                     setSpeedHack(false, "auto")
-                    if pushNotification then
-                        pushNotification("SpeedHack: авто-выкл (скорость изменена)",
-                            Color3.fromRGB(255, 140, 60))
-                    end
                 end
             end)
         end
@@ -1088,7 +1165,7 @@ UserInputService.InputChanged:Connect(function(input)
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
     local cur = UserInputService:GetMouseLocation()
     local nw = math.clamp(resizeStartSize.x + (cur.X - resizeStart.X), 380, 1400)
-    local nh = math.clamp(resizeStartSize.y + (cur.Y - resizeStart.Y), 400, 1200)
+    local nh = math.clamp(resizeStartSize.y + (cur.Y - resizeStart.Y), 420, 1200)
     main.Size = UDim2.new(0, nw, 0, nh)
     if refreshLayout then refreshLayout() end
 end)
@@ -1109,7 +1186,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 36)
 title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
 title.BorderSizePixel = 0
-title.Text = "Подсветка + ESP + Godmode + ТП + Anti-Move + SpeedHack  [P]"
+title.Text = "ItemHighlight + God + ТП + Anti-Move + SpeedHack"
 title.TextColor3 = Color3.fromRGB(230, 230, 240)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
@@ -1183,9 +1260,66 @@ antiMoveBtn.MouseButton1Click:Connect(function()
     antiMoveBtn.BackgroundColor3 = config.antiMove and Color3.fromRGB(80, 200, 160) or Color3.fromRGB(60, 60, 70)
 end)
 
+-- ================== БИНДЫ ==================
+local listeningFor = nil
+
+local function keyFromInput(input)
+    if input.KeyCode and input.KeyCode ~= Enum.KeyCode.Unknown then
+        return input.KeyCode.Name
+    end
+    return nil
+end
+
+local function applyBindLabels()
+    if menuKeyBtn then
+        menuKeyBtn.Text = "Меню: " .. tostring(config.menuKey or "G")
+    end
+    if speedKeyBtn then
+        speedKeyBtn.Text = "SpeedHack: " .. tostring(config.speedKey or "F")
+    end
+end
+
+local bindRowY = 142
+menuKeyBtn = Instance.new("TextButton")
+menuKeyBtn.Size = UDim2.new(0.5, -4, 0, 24)
+menuKeyBtn.Position = UDim2.new(0, 2, 0, bindRowY)
+menuKeyBtn.BackgroundColor3 = Color3.fromRGB(60, 90, 140)
+menuKeyBtn.BorderSizePixel = 0
+menuKeyBtn.Text = "Меню: " .. config.menuKey
+menuKeyBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+menuKeyBtn.Font = Enum.Font.GothamMedium
+menuKeyBtn.TextSize = 11
+menuKeyBtn.Parent = main
+local mkbCorner = Instance.new("UICorner"); mkbCorner.CornerRadius = UDim.new(0, 5); mkbCorner.Parent = menuKeyBtn
+
+speedKeyBtn = Instance.new("TextButton")
+speedKeyBtn.Size = UDim2.new(0.5, -4, 0, 24)
+speedKeyBtn.Position = UDim2.new(0.5, 2, 0, bindRowY)
+speedKeyBtn.BackgroundColor3 = Color3.fromRGB(60, 90, 140)
+speedKeyBtn.BorderSizePixel = 0
+speedKeyBtn.Text = "SpeedHack: " .. config.speedKey
+speedKeyBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+speedKeyBtn.Font = Enum.Font.GothamMedium
+speedKeyBtn.TextSize = 11
+speedKeyBtn.Parent = main
+local skbCorner = Instance.new("UICorner"); skbCorner.CornerRadius = UDim.new(0, 5); skbCorner.Parent = speedKeyBtn
+
+menuKeyBtn.MouseButton1Click:Connect(function()
+    listeningFor = "menu"
+    menuKeyBtn.Text = "Нажми клавишу..."
+    menuKeyBtn.BackgroundColor3 = Color3.fromRGB(140, 100, 40)
+end)
+
+speedKeyBtn.MouseButton1Click:Connect(function()
+    listeningFor = "speed"
+    speedKeyBtn.Text = "Нажми клавишу..."
+    speedKeyBtn.BackgroundColor3 = Color3.fromRGB(140, 100, 40)
+end)
+
+-- ================== НАСТРОЙКИ ESP / TP ==================
 local sizeLabel = Instance.new("TextLabel")
 sizeLabel.Size = UDim2.new(0, 78, 0, 22)
-sizeLabel.Position = UDim2.new(0, 10, 0, 142)
+sizeLabel.Position = UDim2.new(0, 10, 0, 174)
 sizeLabel.BackgroundTransparency = 1
 sizeLabel.Text = "Размер ESP:"
 sizeLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
@@ -1198,7 +1332,7 @@ local sizeButtons = {}
 local function makeSizeBtn(idx, name)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 72, 0, 22)
-    btn.Position = UDim2.new(0, 88 + (idx - 1) * 76, 0, 142)
+    btn.Position = UDim2.new(0, 88 + (idx - 1) * 76, 0, 174)
     btn.BackgroundColor3 = (config.espSize == name) and Color3.fromRGB(70, 120, 200) or Color3.fromRGB(45, 45, 55)
     btn.BorderSizePixel = 0
     btn.Text = name
@@ -1224,7 +1358,7 @@ for i, n in ipairs({"Маленький", "Средний", "Большой"}) d
 
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Size = UDim2.new(0, 90, 0, 22)
-speedLabel.Position = UDim2.new(0, 10, 0, 170)
+speedLabel.Position = UDim2.new(0, 10, 0, 202)
 speedLabel.BackgroundTransparency = 1
 speedLabel.Text = "Скорость ТП:"
 speedLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
@@ -1249,7 +1383,7 @@ end
 local function makeSpeedBtn(idx, name)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 76, 0, 22)
-    btn.Position = UDim2.new(0, 100 + (idx - 1) * 80, 0, 170)
+    btn.Position = UDim2.new(0, 100 + (idx - 1) * 80, 0, 202)
     btn.BackgroundColor3 = (config.tpSpeed == name) and Color3.fromRGB(200, 120, 40) or Color3.fromRGB(45, 45, 55)
     btn.BorderSizePixel = 0
     btn.Text = name
@@ -1272,7 +1406,7 @@ for i, n in ipairs(SPEED_ORDER) do makeSpeedBtn(i, n) end
 
 local customLabel = Instance.new("TextLabel")
 customLabel.Size = UDim2.new(0, 110, 0, 18)
-customLabel.Position = UDim2.new(0, 10, 0, 198)
+customLabel.Position = UDim2.new(0, 10, 0, 230)
 customLabel.BackgroundTransparency = 1
 customLabel.Text = "Кастом. скорость:"
 customLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
@@ -1283,7 +1417,7 @@ customLabel.Parent = main
 
 local customSpeedBox = Instance.new("TextBox")
 customSpeedBox.Size = UDim2.new(0, 90, 0, 22)
-customSpeedBox.Position = UDim2.new(0, 130, 0, 196)
+customSpeedBox.Position = UDim2.new(0, 130, 0, 228)
 customSpeedBox.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
 customSpeedBox.BorderSizePixel = 0
 customSpeedBox.Text = tostring(config.customSpeed or 0.1)
@@ -1322,7 +1456,7 @@ end)
 
 local listLabel = Instance.new("TextLabel")
 listLabel.Size = UDim2.new(1, -20, 0, 16)
-listLabel.Position = UDim2.new(0, 10, 0, 222)
+listLabel.Position = UDim2.new(0, 10, 0, 254)
 listLabel.BackgroundTransparency = 1
 listLabel.Text = "Клик — вкл/выкл. ЦВЕТ — свой цвет. ТП — летит к предмету."
 listLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
@@ -1333,7 +1467,7 @@ listLabel.Parent = main
 
 local scroll = Instance.new("ScrollingFrame")
 scroll.Size = UDim2.new(1, -20, 0, 200)
-scroll.Position = UDim2.new(0, 10, 0, 242)
+scroll.Position = UDim2.new(0, 10, 0, 274)
 scroll.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 6
@@ -1447,7 +1581,7 @@ clearCorner.Parent = clearBtn
 refreshLayout = function()
     local h = main.AbsoluteSize.Y
     local bottomH = 84
-    local scrollHeight = math.max(60, h - 242 - bottomH - 12)
+    local scrollHeight = math.max(60, h - 274 - bottomH - 12)
     scroll.Size = UDim2.new(1, -20, 0, scrollHeight)
 
     bottomBlock.Size = UDim2.new(1, -20, 0, bottomH)
@@ -1907,12 +2041,50 @@ clearBtn.MouseButton1Click:Connect(function()
     if buildList then buildList() end
 end)
 
--- ================== P ==================
+-- ================== КЛАВИШИ ==================
 UserInputService.InputBegan:Connect(function(input, gp)
+    if listeningFor then
+        if input.KeyCode == Enum.KeyCode.Escape then
+            applyBindLabels()
+            menuKeyBtn.BackgroundColor3 = Color3.fromRGB(60, 90, 140)
+            speedKeyBtn.BackgroundColor3 = Color3.fromRGB(60, 90, 140)
+            listeningFor = nil
+            return
+        end
+
+        local keyName = keyFromInput(input)
+        if keyName then
+            if listeningFor == "menu" then
+                config.menuKey = keyName
+                saveConfig(config)
+                if pushNotification then
+                    pushNotification("Бинд меню: " .. keyName, Color3.fromRGB(120, 180, 255))
+                end
+            elseif listeningFor == "speed" then
+                config.speedKey = keyName
+                saveConfig(config)
+                if pushNotification then
+                    pushNotification("Бинд SpeedHack: " .. keyName, Color3.fromRGB(255, 200, 60))
+                end
+            end
+            applyBindLabels()
+            menuKeyBtn.BackgroundColor3 = Color3.fromRGB(60, 90, 140)
+            speedKeyBtn.BackgroundColor3 = Color3.fromRGB(60, 90, 140)
+            listeningFor = nil
+        end
+        return
+    end
+
     if gp then return end
-    if input.KeyCode == Enum.KeyCode.P then
+
+    local keyName = keyFromInput(input)
+    if not keyName then return end
+
+    if keyName == config.menuKey then
         main.Visible = not main.Visible
         if main.Visible and buildList then buildList() end
+    elseif keyName == config.speedKey then
+        setSpeedHack(not config.speedHack, "user")
     end
 end)
 
@@ -1921,6 +2093,7 @@ task.spawn(function()
     task.wait(1)
     if buildList then buildList() end
     updateAllVisuals()
+    applyBindLabels()
     if config.godmode then
         setGodmodeActive(true)
         godBtn.Text = "God: ВКЛ"
@@ -1944,4 +2117,4 @@ task.spawn(function()
     end
 end)
 
-print("[ItemHighlight] Готово. P — меню.")
+print("[ItemHighlight] Готово. Меню: " .. config.menuKey .. " | SpeedHack: " .. config.speedKey)
