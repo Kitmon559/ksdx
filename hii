@@ -1,0 +1,1947 @@
+-- // LocalScript в StarterPlayer.StarterPlayerScripts
+-- // Подсветка + ESP + пикер цвета + Godmode + ТП (без возврата) + Anti-Move + SpeedHack
+-- // FULL FIX (Luau-safe: forward declarations, UDim2, без глобалов)
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local player = Players.LocalPlayer
+
+-- ================== КОНТЕЙНЕР ==================
+local SpawnedItems
+do
+    SpawnedItems = workspace:FindFirstChild("SpawnedItems")
+    if not SpawnedItems then
+        local deadline = tick() + 60
+        while tick() < deadline and not SpawnedItems do
+            task.wait(0.25)
+            SpawnedItems = workspace:FindFirstChild("SpawnedItems")
+        end
+    end
+    if not SpawnedItems then
+        warn("[ItemHighlight] SpawnedItems не найден — fallback на workspace")
+        SpawnedItems = workspace
+    end
+    print("[ItemHighlight] Контейнер: " .. SpawnedItems:GetFullName())
+end
+
+-- ================== УТИЛИТЫ ==================
+local function normalize(s)
+    if type(s) ~= "string" then return "" end
+    return (s:gsub("^%s+", ""):gsub("%s+$", ""):lower())
+end
+
+-- ================== РЕДКОСТИ ==================
+local RARITY_COLORS = {
+    ["Exotic"]    = Color3.fromRGB( 60, 180, 255),
+    ["Mythic"]    = Color3.fromRGB(255,  60,  60),
+    ["Legendary"] = Color3.fromRGB(255, 220,  40),
+    ["Epic"]      = Color3.fromRGB(170,  90, 255),
+    ["Rare"]      = Color3.fromRGB( 60, 120, 255),
+    ["Uncommon"]  = Color3.fromRGB( 80, 200,  80),
+    ["Common"]    = Color3.fromRGB(160, 160, 160),
+}
+
+local ITEM_RARITY = {}
+local function reg(rarity, names)
+    for _, n in ipairs(names) do
+        ITEM_RARITY[normalize(n)] = rarity
+    end
+end
+
+reg("Exotic",    {"Telephone Booth", "Couch", "Chilythrily"})
+reg("Mythic",    {"Vending Machine", "Tape", "Shopping Cart",
+                  "Roadrolleeeeerr", "ROADROLLEEEEERR", "Microwave",
+                  "Magnet Block", "MagnetBlock", "Hot Bog Stand",
+                  "Hot Dog Stand", "HotDogStand", "Glitchy Butter Blok",
+                  "Glitchy Butter Block", "CRT TV", "CRTtv"})
+reg("Legendary", {"Water Cooler", "Traffic Cone", "Pigeon",
+                  "Office Chair", "Fridge", "Carp", "Bus Stop", "BusStop"})
+reg("Epic",      {"Iron Safe", "IronSafe", "Barrier", "Aquarium"})
+reg("Rare",      {"Wallet", "Iron Ladder", "iron_ladder",
+                  "Chocolate Bar", "Chocolate bar", "Anvil"})
+reg("Uncommon",  {"Crate", "Bench", "Beach Chair", "Beach chair", "Beachchair"})
+reg("Common",    {"Trash Box", "TrashBox", "Calendars", "Battery"})
+
+local RARITY_ORDER = {"Exotic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common"}
+
+local function getRarityColor(name)
+    local r = ITEM_RARITY[normalize(name)]
+    if r and RARITY_COLORS[r] then return RARITY_COLORS[r] end
+    return nil
+end
+
+local MANUAL_ITEMS = {
+    "chilythrily", "Glitchy Butter Block", "Barrier", "Office Chair",
+    "Aquarium", "Pigeon", "Vending Machine", "Fridge", "Telephone Booth",
+    "Traffic Cone", "Water Cooler", "ROADROLLEEEEERR", "Wallet", "carp",
+    "Crate", "Calendars", "Ящик", "Календари", "Battery", "IronSafe",
+    "Beach chair", "TrashBox", "Bench", "Tape", "BIG item", "Chocolate bar",
+    "iron_ladder", "Anvil", "Microwave", "Couch", "Shopping Cart",
+    "Hot Dog Stand", "CRT TV",
+}
+
+local ESP_SIZES = {
+    ["Маленький"] = { height = 10, nameSize = 12, distSize = 10, width = 140 },
+    ["Средний"]   = { height = 20, nameSize = 15, distSize = 12, width = 200 },
+    ["Большой"]   = { height = 35, nameSize = 20, distSize = 15, width = 280 },
+}
+
+local TP_SPEEDS = {
+    ["Мгновенно"]    = 0.0,
+    ["Очень быстро"] = 0.08,
+    ["Быстро"]       = 0.15,
+    ["Средне"]       = 0.3,
+    ["Медленно"]     = 0.6,
+}
+
+local TP_OFFSET         = 4
+local TP_E_COUNT        = 3
+local TP_E_DELAY        = 0.1
+local TP_WAIT_LAND      = 0.15
+local TP_WAIT_PICKUP    = 0.4
+local MAX_NEAR_DISTANCE = 3000
+
+local SPEEDHACK_VALUE = 150
+
+local GODMODE_CFRAME = CFrame.new(
+    101.99999237060547, -18.75, -350,
+    0.98821598291397095, -4.2130182128325908e-14, -0.15306594967842102,
+    -4.2632564145606011e-14, 1, 0,
+    0.15306594967842102, -6.525593918173386e-15, 0.98821598291397095
+)
+
+-- ================== СОХРАНЕНИЕ ==================
+local SAVE_FILE = "ItemHighlightConfig.json"
+
+local function saveConfig(data)
+    if writefile then pcall(writefile, SAVE_FILE, HttpService:JSONEncode(data)) end
+end
+
+local function loadConfig()
+    if isfile and isfile(SAVE_FILE) then
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(readfile(SAVE_FILE))
+        end)
+        if ok and type(data) == "table" then return data end
+    end
+    return {}
+end
+
+local config = loadConfig()
+if not config.color then config.color = { r = 1, g = 0, b = 0 } end
+if type(config.selected) ~= "table" then config.selected = {} end
+if type(config.knownNames) ~= "table" then config.knownNames = {} end
+if type(config.perItemColors) ~= "table" then config.perItemColors = {} end
+if config.notify == nil then config.notify = true end
+if config.esp == nil then config.esp = true end
+if config.showNames == nil then config.showNames = true end
+if config.godmode == nil then config.godmode = false end
+if config.enabled == nil then config.enabled = false end
+if config.antiMove == nil then config.antiMove = false end
+if config.speedHack == nil then config.speedHack = false end
+if not config.espSize or not ESP_SIZES[config.espSize] then config.espSize = "Средний" end
+if not config.tpSpeed or not TP_SPEEDS[config.tpSpeed] then config.tpSpeed = "Быстро" end
+if config.customSpeed == nil then config.customSpeed = 0.1 end
+if config.useCustomSpeed == nil then config.useCustomSpeed = false end
+if config.menuWidth == nil then config.menuWidth = 480 end
+if config.menuHeight == nil then config.menuHeight = 560 end
+
+local selectedByNorm = {}
+local knownNamesSet = {}
+
+local function rebuildSelectedNormalized()
+    selectedByNorm = {}
+    for _, name in ipairs(config.selected) do
+        selectedByNorm[normalize(name)] = name
+    end
+end
+
+local function rebuildKnownNamesSet()
+    knownNamesSet = {}
+    for _, name in ipairs(config.knownNames) do
+        knownNamesSet[normalize(name)] = name
+    end
+end
+
+rebuildSelectedNormalized()
+rebuildKnownNamesSet()
+
+local function rememberName(name)
+    local norm = normalize(name)
+    if norm == "" then return end
+    if not knownNamesSet[norm] then
+        knownNamesSet[norm] = name
+        table.insert(config.knownNames, name)
+        saveConfig(config)
+    end
+end
+
+local function getSelectedOriginal(name) return selectedByNorm[normalize(name)] end
+local function isSelected(name) return getSelectedOriginal(name) ~= nil end
+
+local function addSelected(name)
+    local norm = normalize(name)
+    if norm == "" then return end
+    if not selectedByNorm[norm] then
+        selectedByNorm[norm] = name
+        table.insert(config.selected, name)
+        saveConfig(config)
+    end
+end
+
+local function removeSelected(name)
+    local norm = normalize(name)
+    if selectedByNorm[norm] then
+        selectedByNorm[norm] = nil
+        for i, n in ipairs(config.selected) do
+            if normalize(n) == norm then
+                table.remove(config.selected, i)
+                break
+            end
+        end
+        saveConfig(config)
+    end
+end
+
+local function getColorForName(name)
+    local norm = normalize(name)
+    local pc = config.perItemColors[norm]
+    if pc then return Color3.new(pc.r, pc.g, pc.b) end
+    local rc = getRarityColor(name)
+    if rc then return rc end
+    return Color3.new(config.color.r, config.color.g, config.color.b)
+end
+
+local function setPerItemColor(name, r, g, b)
+    config.perItemColors[normalize(name)] = { r = r, g = g, b = b }
+    saveConfig(config)
+end
+
+local function clearPerItemColor(name)
+    config.perItemColors[normalize(name)] = nil
+    saveConfig(config)
+end
+
+local function hasPerItemColor(name)
+    return config.perItemColors[normalize(name)] ~= nil
+end
+
+-- ================== FORWARD DECLARATIONS ==================
+local pushNotification
+local refreshLayout
+local buildList
+local speedHackBtn
+local antiMoveBtn
+local godBtn
+local toggleBtn
+local espBtn
+local namesBtn
+
+-- ================== GODMODE ==================
+local remotesFolder = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+local setBoarded = remotesFolder and remotesFolder:FindFirstChild("SetBoarded")
+
+_G.godmodeActive = false
+
+local function fireGodmode()
+    if not setBoarded then return end
+    pcall(function()
+        setBoarded:FireServer(true, nil, GODMODE_CFRAME)
+    end)
+end
+
+local function godmodeLoop()
+    while _G.godmodeActive do
+        fireGodmode()
+        task.wait(0.15)
+    end
+end
+
+local function setGodmodeActive(state)
+    config.godmode = state
+    saveConfig(config)
+    _G.godmodeActive = state
+    if state then task.spawn(godmodeLoop) end
+end
+
+if setBoarded and hookmetamethod and getnamecallmethod and newcclosure then
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if method == "FireServer" and self == setBoarded then
+            local args = {...}
+            if args[1] == false and _G.godmodeActive then
+                task.spawn(fireGodmode)
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(mt, true)
+end
+
+-- ================== SPEEDHACK ==================
+local speedHackConn = nil
+local savedWalkSpeed = nil
+
+local function getHumanoid()
+    local char = player.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+local function stopSpeedHackLoop()
+    if speedHackConn then
+        speedHackConn:Disconnect()
+        speedHackConn = nil
+    end
+end
+
+-- mode: "user" | "auto"
+local function setSpeedHack(state, mode)
+    mode = mode or "user"
+    config.speedHack = state
+    saveConfig(config)
+
+    local hum = getHumanoid()
+
+    if state then
+        if hum then
+            savedWalkSpeed = hum.WalkSpeed
+            hum.WalkSpeed = SPEEDHACK_VALUE
+        end
+
+        stopSpeedHackLoop()
+        speedHackConn = RunService.Heartbeat:Connect(function()
+            if not config.speedHack then return end
+            local h = getHumanoid()
+            if not h then return end
+            if h.WalkSpeed ~= SPEEDHACK_VALUE then
+                setSpeedHack(false, "auto")
+                if pushNotification then
+                    pushNotification("SpeedHack: авто-выкл (скорость изменена)",
+                        Color3.fromRGB(255, 140, 60))
+                end
+            end
+        end)
+
+        if mode == "user" and pushNotification then
+            pushNotification(
+                "SpeedHack: ВКЛ (" .. SPEEDHACK_VALUE ..
+                "), было: " .. tostring(savedWalkSpeed or "?"),
+                Color3.fromRGB(255, 200, 60)
+            )
+        end
+    else
+        if mode == "user" and hum and savedWalkSpeed then
+            hum.WalkSpeed = savedWalkSpeed
+        end
+        savedWalkSpeed = nil
+        stopSpeedHackLoop()
+        if mode == "user" and pushNotification then
+            pushNotification("SpeedHack: ВЫКЛ", Color3.fromRGB(180, 180, 180))
+        end
+    end
+end
+
+player.CharacterAdded:Connect(function(char)
+    task.wait(0.5)
+    if config.speedHack then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            savedWalkSpeed = hum.WalkSpeed
+            hum.WalkSpeed = SPEEDHACK_VALUE
+            stopSpeedHackLoop()
+            speedHackConn = RunService.Heartbeat:Connect(function()
+                if not config.speedHack then return end
+                local h = getHumanoid()
+                if not h then return end
+                if h.WalkSpeed ~= SPEEDHACK_VALUE then
+                    setSpeedHack(false, "auto")
+                    if pushNotification then
+                        pushNotification("SpeedHack: авто-выкл (скорость изменена)",
+                            Color3.fromRGB(255, 140, 60))
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- синхронизация кнопки с реальным состоянием
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        if speedHackBtn then
+            local on = config.speedHack
+            local wantText = on and "SpeedHack: ВКЛ" or "SpeedHack: ВЫКЛ"
+            local wantColor = on and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(60, 60, 70)
+            if speedHackBtn.Text ~= wantText then
+                speedHackBtn.Text = wantText
+                speedHackBtn.BackgroundColor3 = wantColor
+            end
+        end
+    end
+end)
+
+-- ================== ПОДСВЕТКА + ESP ==================
+local activeVisuals = {}
+
+local function removeVisualsForItem(item)
+    local data = activeVisuals[item]
+    if data then
+        if data.highlight then data.highlight:Destroy() end
+        if data.box then data.box:Destroy() end
+        if data.esp then data.esp:Destroy() end
+    end
+    activeVisuals[item] = nil
+end
+
+local function buildESP(item, displayName, c)
+    local old = item:FindFirstChild("ItemESP")
+    if old then old:Destroy() end
+
+    local s = ESP_SIZES[config.espSize] or ESP_SIZES["Средний"]
+
+    local esp = Instance.new("BillboardGui")
+    esp.Name = "ItemESP"
+    esp.Adornee = item
+    esp.Size = UDim2.new(0, s.width, 0, s.nameSize + s.distSize + 10)
+    esp.StudsOffset = Vector3.new(0, s.height / 6, 0)
+    esp.AlwaysOnTop = true
+    esp.MaxDistance = 2000
+    esp.Parent = item
+
+    if config.showNames then
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Name = "NameLabel"
+        nameLabel.Size = UDim2.new(1, 0, 0, s.nameSize + 6)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = displayName or item.Name
+        nameLabel.TextColor3 = c
+        nameLabel.TextStrokeTransparency = 0
+        nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextSize = s.nameSize
+        nameLabel.Parent = esp
+
+        local distLabel = Instance.new("TextLabel")
+        distLabel.Name = "DistLabel"
+        distLabel.Size = UDim2.new(1, 0, 0, s.distSize + 4)
+        distLabel.Position = UDim2.new(0, 0, 0, s.nameSize + 6)
+        distLabel.BackgroundTransparency = 1
+        distLabel.Text = "0 studs"
+        distLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        distLabel.TextStrokeTransparency = 0
+        distLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+        distLabel.Font = Enum.Font.GothamBold
+        distLabel.TextSize = s.distSize
+        distLabel.Parent = esp
+    end
+
+    return esp
+end
+
+local function applyVisualsToItem(item, displayName)
+    local c = getColorForName(displayName or item.Name)
+
+    if activeVisuals[item] then
+        local d = activeVisuals[item]
+        if d.highlight then d.highlight.FillColor = c end
+        if d.box then d.box.Color3 = c end
+        if d.esp then
+            local nl = d.esp:FindFirstChild("NameLabel")
+            if nl then nl.TextColor3 = c end
+        end
+        return
+    end
+
+    local hl = Instance.new("Highlight")
+    hl.Name = "ItemHighlight"
+    hl.Adornee = item
+    hl.FillColor = c
+    hl.OutlineColor = Color3.new(1, 1, 1)
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = item
+
+    local box = nil
+    if item:IsA("Model") then
+        box = Instance.new("SelectionBox")
+        box.Name = "ItemHighlightBox"
+        box.Adornee = item
+        box.Color3 = c
+        box.LineThickness = 0.05
+        box.SurfaceTransparency = 1
+        box.Parent = item
+    end
+
+    local esp = nil
+    if config.esp then
+        esp = buildESP(item, displayName or item.Name, c)
+    end
+
+    activeVisuals[item] = { highlight = hl, name = displayName, box = box, esp = esp }
+
+    item.AncestryChanged:Connect(function(_, parent)
+        if not parent then removeVisualsForItem(item) end
+    end)
+end
+
+local function clearAllVisuals()
+    for item in pairs(activeVisuals) do
+        removeVisualsForItem(item)
+    end
+    activeVisuals = {}
+end
+
+-- ============ СБОР ПРЕДМЕТОВ ============
+local function collectItems()
+    local list = {}
+    local function addFrom(parent)
+        local ok, kids = pcall(function() return parent:GetChildren() end)
+        if not ok or not kids then return end
+        for _, c in ipairs(kids) do
+            if c:IsA("Folder") then
+                addFrom(c)
+            elseif c:IsA("Model") or c:IsA("Tool") or c:IsA("Accessory") or c:IsA("BasePart") then
+                table.insert(list, c)
+            end
+        end
+    end
+    addFrom(SpawnedItems)
+    return list
+end
+
+local function updateAllVisuals()
+    if not config.enabled then
+        clearAllVisuals()
+        return
+    end
+
+    for item, data in pairs(activeVisuals) do
+        if not isSelected(data.name) then
+            removeVisualsForItem(item)
+        end
+    end
+
+    for _, item in ipairs(collectItems()) do
+        local orig = getSelectedOriginal(item.Name)
+        if orig then
+            applyVisualsToItem(item, orig)
+        end
+    end
+
+    for _, data in pairs(activeVisuals) do
+        local c = getColorForName(data.name)
+        if data.highlight then data.highlight.FillColor = c end
+        if data.box then data.box.Color3 = c end
+        if data.esp then
+            local nl = data.esp:FindFirstChild("NameLabel")
+            if nl then nl.TextColor3 = c end
+        end
+    end
+end
+
+local function rebuildAllESP()
+    for item, data in pairs(activeVisuals) do
+        if config.esp then
+            local c = getColorForName(data.name)
+            data.esp = buildESP(item, data.name, c)
+        else
+            if data.esp then
+                data.esp:Destroy()
+                data.esp = nil
+            end
+        end
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    local char = player.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    for item, data in pairs(activeVisuals) do
+        if data.esp then
+            local dl = data.esp:FindFirstChild("DistLabel")
+            if dl then
+                local ok, pos = pcall(function() return item:GetPivot().Position end)
+                if ok and pos then
+                    local dist = (root.Position - pos).Magnitude
+                    dl.Text = ("%d studs"):format(math.floor(dist))
+                end
+            end
+        end
+    end
+end)
+
+-- ================== НАЖАТИЕ E ==================
+local function doE()
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    end)
+    task.wait(0.04)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end)
+end
+
+local function holdE(seconds)
+    seconds = seconds or 0.5
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    end)
+    task.wait(seconds)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end)
+end
+
+local function grabItem(item)
+    local holdTime = 0.4
+    if item then
+        local pp = item:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if pp and pp.HoldDuration and pp.HoldDuration > 0 then
+            holdTime = pp.HoldDuration + 0.15
+        end
+    end
+    doE()
+    task.wait(0.08)
+    holdE(holdTime)
+    task.wait(0.08)
+    for _ = 1, TP_E_COUNT do
+        doE()
+        task.wait(TP_E_DELAY)
+    end
+end
+
+-- ================== ТП ==================
+local function getItemPosition(item, fromPos)
+    if not item or not item.Parent then return nil end
+    if item:IsA("BasePart") then return item.Position, item end
+
+    local parts = {}
+    for _, d in ipairs(item:GetDescendants()) do
+        if d:IsA("BasePart") and d.Transparency < 1 and d.Size.Magnitude > 0.1 then
+            table.insert(parts, d)
+        end
+    end
+
+    if #parts == 0 then
+        if item.PrimaryPart then return item.PrimaryPart.Position, item.PrimaryPart end
+        local ok, pivot = pcall(function() return item:GetPivot() end)
+        if ok and pivot then return pivot.Position end
+        return nil
+    end
+
+    if fromPos then
+        local best, bestDist = nil, math.huge
+        for _, p in ipairs(parts) do
+            local d = (p.Position - fromPos).Magnitude
+            if d < bestDist then
+                bestDist = d
+                best = p
+            end
+        end
+        return best.Position, best
+    end
+
+    local sum = Vector3.zero
+    for _, p in ipairs(parts) do sum += p.Position end
+    return sum / #parts
+end
+
+local function isValidItem(item)
+    if not item or not item.Parent then return false end
+    if not item:IsDescendantOf(SpawnedItems) then return false end
+    if not item:IsDescendantOf(workspace) then return false end
+
+    local hasVisible = false
+    if item:IsA("BasePart") then
+        if item.Transparency < 1 and item.Size.Magnitude > 0.1 then hasVisible = true end
+    else
+        for _, d in ipairs(item:GetDescendants()) do
+            if d:IsA("BasePart") and d.Transparency < 1 and d.Size.Magnitude > 0.1 then
+                hasVisible = true
+                break
+            end
+        end
+    end
+    if not hasVisible then return false end
+
+    local pos = getItemPosition(item)
+    if not pos then return false end
+    if pos.Magnitude < 0.1 then return false end
+    if pos.Y < -500 or pos.Y > 5000 then return false end
+    return true
+end
+
+local function findRandomItemByName(name)
+    local norm = normalize(name)
+    local char = player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local origin = root and root.Position or Vector3.new(0, 0, 0)
+
+    local nearList, farList = {}, {}
+
+    for _, item in ipairs(collectItems()) do
+        if normalize(item.Name) == norm and isValidItem(item) then
+            local pos, part = getItemPosition(item, origin)
+            if pos then
+                local dist = (origin - pos).Magnitude
+                local entry = { item = item, pos = pos, part = part }
+                if dist <= MAX_NEAR_DISTANCE then
+                    table.insert(nearList, entry)
+                else
+                    table.insert(farList, entry)
+                end
+            end
+        end
+    end
+
+    if #nearList > 0 then
+        local p = nearList[math.random(1, #nearList)]
+        return p.item, p.pos, p.part
+    end
+    if #farList > 0 then
+        local p = farList[math.random(1, #farList)]
+        return p.item, p.pos, p.part
+    end
+    return nil
+end
+
+local function getCurrentSpeed()
+    if config.useCustomSpeed then
+        local s = tonumber(config.customSpeed)
+        if s and s >= 0 then return s end
+    end
+    return TP_SPEEDS[config.tpSpeed] or TP_SPEEDS["Быстро"]
+end
+
+local tweenTpRunning = false
+
+local function tweenTeleportAndPickup(name)
+    if tweenTpRunning then
+        if pushNotification then pushNotification("ТП уже идёт", Color3.fromRGB(200, 200, 80)) end
+        return
+    end
+
+    local char = player.Character
+    if not char then
+        if pushNotification then pushNotification("Нет персонажа", Color3.fromRGB(200, 100, 100)) end
+        return
+    end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then
+        if pushNotification then pushNotification("Нет HumanoidRootPart", Color3.fromRGB(200, 100, 100)) end
+        return
+    end
+
+    tweenTpRunning = true
+
+    local item, itemPos, targetPart
+    for _ = 1, 5 do
+        item, itemPos, targetPart = findRandomItemByName(name)
+        if item and itemPos then break end
+        item, itemPos, targetPart = nil, nil, nil
+        task.wait(0.1)
+    end
+
+    if not item or not itemPos then
+        tweenTpRunning = false
+        if pushNotification then pushNotification(name .. ": нет в мире", Color3.fromRGB(200, 100, 100)) end
+        return
+    end
+
+    local startPos = root.Position
+    local focusPos = targetPart and targetPart.Position or itemPos
+
+    local offsetDir = startPos - focusPos
+    offsetDir = Vector3.new(offsetDir.X, 0, offsetDir.Z)
+    if offsetDir.Magnitude < 0.5 then
+        offsetDir = Vector3.new(math.random(-3, 3), 0, math.random(-3, 3))
+        if offsetDir.Magnitude < 0.5 then offsetDir = Vector3.new(3, 0, 3) end
+    end
+    offsetDir = offsetDir.Unit
+
+    local partSize = targetPart and targetPart.Size or Vector3.new(4, 4, 4)
+    local radius = math.max(partSize.X, partSize.Z) * 0.5 + TP_OFFSET
+
+    local targetPos = focusPos + offsetDir * radius
+
+    local ray = Ray.new(targetPos + Vector3.new(0, 20, 0), Vector3.new(0, -200, 0))
+    local hitPart = workspace:FindPartOnRay(ray, char)
+    if hitPart then
+        targetPos = hitPart.Position + Vector3.new(0, 3.5, 0)
+    end
+
+    local lookDir = focusPos - targetPos
+    lookDir = Vector3.new(lookDir.X, 0, lookDir.Z)
+    if lookDir.Magnitude < 0.1 then lookDir = Vector3.new(0, 0, -1) end
+    local targetCF = CFrame.new(targetPos, targetPos + lookDir.Unit)
+
+    local flyTime = getCurrentSpeed()
+
+    if flyTime <= 0.01 then
+        root.CFrame = targetCF
+    else
+        local tweenTo = TweenService:Create(
+            root,
+            TweenInfo.new(flyTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { CFrame = targetCF }
+        )
+        tweenTo:Play()
+        tweenTo.Completed:Wait()
+    end
+
+    task.wait(TP_WAIT_LAND)
+    if isValidItem(item) then grabItem(item) end
+    task.wait(TP_WAIT_PICKUP)
+
+    root.Velocity = Vector3.zero
+    root.RotVelocity = Vector3.zero
+
+    tweenTpRunning = false
+    if pushNotification then
+        pushNotification("ТП: " .. name .. " — готово", Color3.fromRGB(80, 180, 255))
+    end
+end
+
+-- ================== УВЕДОМЛЕНИЯ ==================
+local notifyGui = Instance.new("ScreenGui")
+notifyGui.Name = "ItemHighlightNotify"
+notifyGui.ResetOnSpawn = false
+notifyGui.IgnoreGuiInset = true
+notifyGui.DisplayOrder = 999
+notifyGui.Parent = player:WaitForChild("PlayerGui")
+
+local notifyHolder = Instance.new("Frame")
+notifyHolder.Name = "NotifyHolder"
+notifyHolder.AnchorPoint = Vector2.new(1, 0)
+notifyHolder.Position = UDim2.new(1, -20, 0, 20)
+notifyHolder.Size = UDim2.new(0, 320, 0, 500)
+notifyHolder.BackgroundTransparency = 1
+notifyHolder.Parent = notifyGui
+
+local notifyLayout = Instance.new("UIListLayout")
+notifyLayout.Padding = UDim.new(0, 8)
+notifyLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+notifyLayout.SortOrder = Enum.SortOrder.LayoutOrder
+notifyLayout.Parent = notifyHolder
+
+local notifyCounter = 0
+
+pushNotification = function(text, color)
+    color = color or Color3.fromRGB(80, 180, 255)
+    notifyCounter = notifyCounter + 1
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    frame.BorderSizePixel = 0
+    frame.ClipsDescendants = true
+    frame.BackgroundTransparency = 0.1
+    frame.LayoutOrder = notifyCounter
+    frame.Parent = notifyHolder
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color
+    stroke.Thickness = 1.5
+    stroke.Parent = frame
+
+    local accent = Instance.new("Frame")
+    accent.Size = UDim2.new(0, 4, 1, 0)
+    accent.BackgroundColor3 = color
+    accent.BorderSizePixel = 0
+    accent.Parent = frame
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(0, 8)
+    accentCorner.Parent = accent
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -30, 0, 20)
+    title.Position = UDim2.new(0, 16, 0, 8)
+    title.BackgroundTransparency = 1
+    title.Text = "ItemHighlight"
+    title.TextColor3 = Color3.fromRGB(230, 230, 240)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 12
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = frame
+
+    local body = Instance.new("TextLabel")
+    body.Size = UDim2.new(1, -30, 0, 20)
+    body.Position = UDim2.new(0, 16, 0, 26)
+    body.BackgroundTransparency = 1
+    body.Text = text
+    body.TextColor3 = color
+    body.Font = Enum.Font.GothamMedium
+    body.TextSize = 13
+    body.TextXAlignment = Enum.TextXAlignment.Left
+    body.Parent = frame
+
+    TweenService:Create(frame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(1, 0, 0, 52),
+    }):Play()
+
+    task.delay(4, function()
+        if not frame.Parent then return end
+        local out = TweenService:Create(frame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(1, 0, 0, 0),
+            BackgroundTransparency = 1,
+        })
+        out:Play()
+        out.Completed:Connect(function() frame:Destroy() end)
+    end)
+end
+
+-- ================== ОТСЛЕЖИВАНИЕ ==================
+local knownItems = {}
+local processedRecently = {}
+
+for _, item in ipairs(collectItems()) do
+    knownItems[item] = true
+    rememberName(item.Name)
+end
+for _, name in ipairs(MANUAL_ITEMS) do rememberName(name) end
+
+SpawnedItems.ChildAdded:Connect(function(item)
+    local now = tick()
+    if processedRecently[item] and (now - processedRecently[item]) < 0.5 then return end
+    processedRecently[item] = now
+    if knownItems[item] then return end
+    knownItems[item] = true
+
+    if not (item:IsA("Model") or item:IsA("Tool") or item:IsA("Accessory")
+            or item:IsA("BasePart") or item:IsA("Folder")) then
+        return
+    end
+
+    if item:IsA("Model") or item:IsA("Tool") or item:IsA("Accessory") or item:IsA("BasePart") then
+        rememberName(item.Name)
+        local matched = getSelectedOriginal(item.Name)
+        if config.enabled and matched then applyVisualsToItem(item, matched) end
+        if matched and config.notify and pushNotification then
+            pushNotification(item.Name .. "  появился!", Color3.fromRGB(80, 180, 255))
+        end
+    end
+    task.defer(function() if buildList then buildList() end end)
+end)
+
+SpawnedItems.ChildRemoved:Connect(function(item)
+    knownItems[item] = nil
+    removeVisualsForItem(item)
+    task.defer(function() if buildList then buildList() end end)
+end)
+
+-- ================== ANTI-MOVE ==================
+local RIVER_PATH = {"0Map", "RiverBay", "RiverSite", "Floors", "RiverWater"}
+local antiMoveConn = nil
+local antiPlatform = nil
+local riverStartCF = nil
+
+local function getRiverWater()
+    local cur = workspace
+    for _, name in ipairs(RIVER_PATH) do
+        if not cur then return nil end
+        cur = cur:FindFirstChild(name)
+    end
+    return cur
+end
+
+local function spawnAntiPlatform(rw)
+    if antiPlatform and antiPlatform.Parent then antiPlatform:Destroy() end
+    local rwSize, rwCF = rw.Size, rw.CFrame
+    local plat = Instance.new("Part")
+    plat.Name = "AntiMovePlatform"
+    plat.Size = Vector3.new(rwSize.X * 1.05, 1, rwSize.Z * 1.05)
+    plat.CFrame = CFrame.new((rwCF * CFrame.new(0, -(rwSize.Y / 2) - 0.5, 0)).Position)
+    plat.Anchored = true
+    plat.CanCollide = true
+    plat.CanTouch = true
+    plat.CanQuery = true
+    plat.Transparency = 1
+    plat.CastShadow = false
+    plat.Material = Enum.Material.SmoothPlastic
+    plat.Parent = workspace
+    antiPlatform = plat
+end
+
+local function applyAntiMove(state)
+    local rw = getRiverWater()
+    if not rw or not rw:IsA("BasePart") then
+        warn("[ItemHighlight] Anti-Move: RiverWater не найден")
+        return
+    end
+    if state then
+        riverStartCF = rw.CFrame
+        spawnAntiPlatform(rw)
+    else
+        if antiPlatform then antiPlatform:Destroy(); antiPlatform = nil end
+        riverStartCF = nil
+    end
+end
+
+local function startAntiMoveLoop()
+    if antiMoveConn then antiMoveConn:Disconnect() end
+    antiMoveConn = RunService.Heartbeat:Connect(function()
+        if not config.antiMove then return end
+        local rw = getRiverWater()
+        if rw and rw:IsA("BasePart") then
+            if riverStartCF and (rw.CFrame.Position - riverStartCF.Position).Magnitude > 0.5 then
+                rw.CFrame = riverStartCF
+            end
+            pcall(function()
+                rw.AssemblyLinearVelocity  = Vector3.zero
+                rw.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end)
+end
+
+local function setAntiMove(state)
+    config.antiMove = state
+    saveConfig(config)
+    applyAntiMove(state)
+    if state then
+        startAntiMoveLoop()
+        if pushNotification then
+            pushNotification("Anti-Move: ВКЛ", Color3.fromRGB(80, 200, 160))
+        end
+    else
+        if antiMoveConn then antiMoveConn:Disconnect(); antiMoveConn = nil end
+        if pushNotification then
+            pushNotification("Anti-Move: ВЫКЛ", Color3.fromRGB(200, 120, 80))
+        end
+    end
+end
+
+-- ================== GUI ==================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ItemHighlightMenu"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 50
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.new(0, config.menuWidth, 0, config.menuHeight)
+main.Position = UDim2.new(0.5, -config.menuWidth / 2, 0.5, -config.menuHeight / 2)
+main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+main.BorderSizePixel = 0
+main.Visible = false
+main.Active = true
+main.Draggable = true
+main.ClipsDescendants = true
+main.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = main
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(70, 70, 90)
+mainStroke.Thickness = 1
+mainStroke.Parent = main
+
+local resizeHandle = Instance.new("TextButton")
+resizeHandle.Name = "ResizeHandle"
+resizeHandle.Size = UDim2.new(0, 18, 0, 18)
+resizeHandle.Position = UDim2.new(1, -18, 1, -18)
+resizeHandle.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+resizeHandle.BorderSizePixel = 0
+resizeHandle.Text = "◢"
+resizeHandle.TextColor3 = Color3.fromRGB(200, 200, 220)
+resizeHandle.Font = Enum.Font.GothamBold
+resizeHandle.TextSize = 14
+resizeHandle.ZIndex = 100
+resizeHandle.Parent = main
+local resizeCorner = Instance.new("UICorner")
+resizeCorner.CornerRadius = UDim.new(0, 6)
+resizeCorner.Parent = resizeHandle
+
+local resizing = false
+local resizeStart = nil
+local resizeStartSize = nil
+
+resizeHandle.MouseButton1Down:Connect(function()
+    resizing = true
+    resizeStart = UserInputService:GetMouseLocation()
+    resizeStartSize = { x = main.AbsoluteSize.X, y = main.AbsoluteSize.Y }
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not resizing then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local cur = UserInputService:GetMouseLocation()
+    local nw = math.clamp(resizeStartSize.x + (cur.X - resizeStart.X), 380, 1400)
+    local nh = math.clamp(resizeStartSize.y + (cur.Y - resizeStart.Y), 400, 1200)
+    main.Size = UDim2.new(0, nw, 0, nh)
+    if refreshLayout then refreshLayout() end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        if resizing then
+            resizing = false
+            config.menuWidth = math.floor(main.AbsoluteSize.X)
+            config.menuHeight = math.floor(main.AbsoluteSize.Y)
+            saveConfig(config)
+        end
+    end
+end)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 36)
+title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+title.BorderSizePixel = 0
+title.Text = "Подсветка + ESP + Godmode + ТП + Anti-Move + SpeedHack  [P]"
+title.TextColor3 = Color3.fromRGB(230, 230, 240)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 13
+title.Parent = main
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 10)
+titleCorner.Parent = title
+
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -20, 0, 26)
+searchBox.Position = UDim2.new(0, 10, 0, 42)
+searchBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+searchBox.BorderSizePixel = 0
+searchBox.PlaceholderText = "Поиск..."
+searchBox.Text = ""
+searchBox.TextColor3 = Color3.fromRGB(240, 240, 240)
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 13
+searchBox.ClearTextOnFocus = false
+searchBox.Parent = main
+local searchCorner = Instance.new("UICorner")
+searchCorner.CornerRadius = UDim.new(0, 6)
+searchCorner.Parent = searchBox
+
+local function makeToggleBtn(x, w, text, onColor, isOn)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(w, -4, 0, 28)
+    btn.Position = UDim2.new(x, 2, 0, 76)
+    btn.BackgroundColor3 = isOn and onColor or Color3.fromRGB(60, 60, 70)
+    btn.BorderSizePixel = 0
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(240, 240, 240)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 11
+    btn.Parent = main
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = btn
+    return btn
+end
+
+toggleBtn = makeToggleBtn(0, 0.25, config.enabled and "Подсвет: ВКЛ" or "Подсвет: ВЫКЛ",
+    Color3.fromRGB(60, 160, 80), config.enabled)
+espBtn = makeToggleBtn(0.25, 0.25, config.esp and "ESP: ВКЛ" or "ESP: ВЫКЛ",
+    Color3.fromRGB(120, 90, 200), config.esp)
+namesBtn = makeToggleBtn(0.5, 0.25, config.showNames and "Надписи: ВКЛ" or "Надписи: ВЫКЛ",
+    Color3.fromRGB(80, 120, 200), config.showNames)
+godBtn = makeToggleBtn(0.75, 0.25, config.godmode and "God: ВКЛ" or "God: ВЫКЛ",
+    Color3.fromRGB(200, 80, 80), config.godmode)
+
+local secondRowY = 110
+speedHackBtn = makeToggleBtn(0, 0.5,
+    config.speedHack and "SpeedHack: ВКЛ" or "SpeedHack: ВЫКЛ",
+    Color3.fromRGB(255, 200, 60), config.speedHack)
+speedHackBtn.Position = UDim2.new(0, 2, 0, secondRowY)
+speedHackBtn.Size = UDim2.new(0.5, -4, 0, 28)
+
+antiMoveBtn = makeToggleBtn(0.5, 0.5,
+    config.antiMove and "Anti-Move: ВКЛ" or "Anti-Move: ВЫКЛ",
+    Color3.fromRGB(80, 200, 160), config.antiMove)
+antiMoveBtn.Position = UDim2.new(0.5, 2, 0, secondRowY)
+antiMoveBtn.Size = UDim2.new(0.5, -4, 0, 28)
+
+speedHackBtn.MouseButton1Click:Connect(function()
+    setSpeedHack(not config.speedHack, "user")
+end)
+
+antiMoveBtn.MouseButton1Click:Connect(function()
+    setAntiMove(not config.antiMove)
+    antiMoveBtn.Text = config.antiMove and "Anti-Move: ВКЛ" or "Anti-Move: ВЫКЛ"
+    antiMoveBtn.BackgroundColor3 = config.antiMove and Color3.fromRGB(80, 200, 160) or Color3.fromRGB(60, 60, 70)
+end)
+
+local sizeLabel = Instance.new("TextLabel")
+sizeLabel.Size = UDim2.new(0, 78, 0, 22)
+sizeLabel.Position = UDim2.new(0, 10, 0, 142)
+sizeLabel.BackgroundTransparency = 1
+sizeLabel.Text = "Размер ESP:"
+sizeLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+sizeLabel.Font = Enum.Font.GothamMedium
+sizeLabel.TextSize = 12
+sizeLabel.TextXAlignment = Enum.TextXAlignment.Left
+sizeLabel.Parent = main
+
+local sizeButtons = {}
+local function makeSizeBtn(idx, name)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 72, 0, 22)
+    btn.Position = UDim2.new(0, 88 + (idx - 1) * 76, 0, 142)
+    btn.BackgroundColor3 = (config.espSize == name) and Color3.fromRGB(70, 120, 200) or Color3.fromRGB(45, 45, 55)
+    btn.BorderSizePixel = 0
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(240, 240, 240)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 11
+    btn.Parent = main
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 5)
+    c.Parent = btn
+    btn.MouseButton1Click:Connect(function()
+        config.espSize = name
+        saveConfig(config)
+        for _, b in pairs(sizeButtons) do
+            b.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        end
+        btn.BackgroundColor3 = Color3.fromRGB(70, 120, 200)
+        rebuildAllESP()
+    end)
+    sizeButtons[name] = btn
+end
+for i, n in ipairs({"Маленький", "Средний", "Большой"}) do makeSizeBtn(i, n) end
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(0, 90, 0, 22)
+speedLabel.Position = UDim2.new(0, 10, 0, 170)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = "Скорость ТП:"
+speedLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+speedLabel.Font = Enum.Font.GothamMedium
+speedLabel.TextSize = 12
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.Parent = main
+
+local speedButtons = {}
+local SPEED_ORDER = {"Мгновенно", "Очень быстро", "Быстро", "Средне", "Медленно"}
+
+local function refreshSpeedButtons()
+    for name, btn in pairs(speedButtons) do
+        if config.useCustomSpeed then
+            btn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        else
+            btn.BackgroundColor3 = (config.tpSpeed == name) and Color3.fromRGB(200, 120, 40) or Color3.fromRGB(45, 45, 55)
+        end
+    end
+end
+
+local function makeSpeedBtn(idx, name)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 76, 0, 22)
+    btn.Position = UDim2.new(0, 100 + (idx - 1) * 80, 0, 170)
+    btn.BackgroundColor3 = (config.tpSpeed == name) and Color3.fromRGB(200, 120, 40) or Color3.fromRGB(45, 45, 55)
+    btn.BorderSizePixel = 0
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(240, 240, 240)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 10
+    btn.Parent = main
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 5)
+    c.Parent = btn
+    btn.MouseButton1Click:Connect(function()
+        config.tpSpeed = name
+        config.useCustomSpeed = false
+        saveConfig(config)
+        refreshSpeedButtons()
+    end)
+    speedButtons[name] = btn
+end
+for i, n in ipairs(SPEED_ORDER) do makeSpeedBtn(i, n) end
+
+local customLabel = Instance.new("TextLabel")
+customLabel.Size = UDim2.new(0, 110, 0, 18)
+customLabel.Position = UDim2.new(0, 10, 0, 198)
+customLabel.BackgroundTransparency = 1
+customLabel.Text = "Кастом. скорость:"
+customLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+customLabel.Font = Enum.Font.GothamMedium
+customLabel.TextSize = 11
+customLabel.TextXAlignment = Enum.TextXAlignment.Left
+customLabel.Parent = main
+
+local customSpeedBox = Instance.new("TextBox")
+customSpeedBox.Size = UDim2.new(0, 90, 0, 22)
+customSpeedBox.Position = UDim2.new(0, 130, 0, 196)
+customSpeedBox.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+customSpeedBox.BorderSizePixel = 0
+customSpeedBox.Text = tostring(config.customSpeed or 0.1)
+customSpeedBox.PlaceholderText = "сек"
+customSpeedBox.TextColor3 = Color3.fromRGB(240, 240, 240)
+customSpeedBox.Font = Enum.Font.GothamMedium
+customSpeedBox.TextSize = 12
+customSpeedBox.ClearTextOnFocus = false
+customSpeedBox.Parent = main
+local csbCorner = Instance.new("UICorner")
+csbCorner.CornerRadius = UDim.new(0, 5)
+csbCorner.Parent = customSpeedBox
+
+customSpeedBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local val = tonumber(customSpeedBox.Text)
+    if val and val >= 0 then
+        config.customSpeed = val
+        config.useCustomSpeed = true
+        saveConfig(config)
+        refreshSpeedButtons()
+    end
+end)
+
+customSpeedBox.FocusLost:Connect(function()
+    local val = tonumber(customSpeedBox.Text)
+    if val and val >= 0 then
+        config.customSpeed = val
+        config.useCustomSpeed = true
+    else
+        customSpeedBox.Text = tostring(config.customSpeed or 0.1)
+        config.useCustomSpeed = true
+    end
+    saveConfig(config)
+    refreshSpeedButtons()
+end)
+
+local listLabel = Instance.new("TextLabel")
+listLabel.Size = UDim2.new(1, -20, 0, 16)
+listLabel.Position = UDim2.new(0, 10, 0, 222)
+listLabel.BackgroundTransparency = 1
+listLabel.Text = "Клик — вкл/выкл. ЦВЕТ — свой цвет. ТП — летит к предмету."
+listLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+listLabel.Font = Enum.Font.Gotham
+listLabel.TextSize = 11
+listLabel.TextXAlignment = Enum.TextXAlignment.Left
+listLabel.Parent = main
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -20, 0, 200)
+scroll.Position = UDim2.new(0, 10, 0, 242)
+scroll.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 6
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.Parent = main
+local scrollCorner = Instance.new("UICorner")
+scrollCorner.CornerRadius = UDim.new(0, 6)
+scrollCorner.Parent = scroll
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 4)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = scroll
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, 6)
+listPadding.PaddingLeft = UDim.new(0, 6)
+listPadding.PaddingRight = UDim.new(0, 6)
+listPadding.PaddingBottom = UDim.new(0, 6)
+listPadding.Parent = scroll
+
+local bottomBlock = Instance.new("Frame")
+bottomBlock.Name = "BottomBlock"
+bottomBlock.BackgroundTransparency = 1
+bottomBlock.Parent = main
+
+local colorLabel = Instance.new("TextLabel")
+colorLabel.Size = UDim2.new(1, 0, 0, 16)
+colorLabel.BackgroundTransparency = 1
+colorLabel.Text = "ОБЩИЙ цвет (0-1):"
+colorLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+colorLabel.Font = Enum.Font.GothamMedium
+colorLabel.TextSize = 12
+colorLabel.TextXAlignment = Enum.TextXAlignment.Left
+colorLabel.Parent = bottomBlock
+
+local colorPreview = Instance.new("Frame")
+colorPreview.Size = UDim2.new(0, 50, 0, 26)
+colorPreview.BackgroundColor3 = Color3.new(config.color.r, config.color.g, config.color.b)
+colorPreview.BorderSizePixel = 0
+colorPreview.Parent = bottomBlock
+local previewCorner = Instance.new("UICorner")
+previewCorner.CornerRadius = UDim.new(0, 6)
+previewCorner.Parent = colorPreview
+
+local function makeColorBox(offsetX, labelText, value)
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0, 58, 0, 26)
+    box.Position = UDim2.new(0, offsetX, 0, 18)
+    box.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    box.BorderSizePixel = 0
+    box.Text = tostring(value)
+    box.TextColor3 = Color3.fromRGB(240, 240, 240)
+    box.Font = Enum.Font.GothamMedium
+    box.TextSize = 12
+    box.PlaceholderText = labelText
+    box.Parent = bottomBlock
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = box
+    return box
+end
+
+local rBox = makeColorBox(60, "R", config.color.r)
+local gBox = makeColorBox(122, "G", config.color.g)
+local bBox = makeColorBox(184, "B", config.color.b)
+
+local function readColorInputs()
+    local r = math.clamp(tonumber(rBox.Text) or 0, 0, 1)
+    local g = math.clamp(tonumber(gBox.Text) or 0, 0, 1)
+    local b = math.clamp(tonumber(bBox.Text) or 0, 0, 1)
+    config.color = { r = r, g = g, b = b }
+    colorPreview.BackgroundColor3 = Color3.new(r, g, b)
+    saveConfig(config)
+    updateAllVisuals()
+end
+
+rBox.FocusLost:Connect(readColorInputs)
+gBox.FocusLost:Connect(readColorInputs)
+bBox.FocusLost:Connect(readColorInputs)
+
+local refreshBtn = Instance.new("TextButton")
+refreshBtn.Size = UDim2.new(0.5, -4, 0, 26)
+refreshBtn.Position = UDim2.new(0, 0, 0, 50)
+refreshBtn.BackgroundColor3 = Color3.fromRGB(50, 90, 160)
+refreshBtn.BorderSizePixel = 0
+refreshBtn.Text = "Обновить список"
+refreshBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+refreshBtn.Font = Enum.Font.GothamMedium
+refreshBtn.TextSize = 12
+refreshBtn.Parent = bottomBlock
+local refreshCorner = Instance.new("UICorner")
+refreshCorner.CornerRadius = UDim.new(0, 6)
+refreshCorner.Parent = refreshBtn
+
+local clearBtn = Instance.new("TextButton")
+clearBtn.Size = UDim2.new(0.5, -4, 0, 26)
+clearBtn.Position = UDim2.new(0.5, 2, 0, 50)
+clearBtn.BackgroundColor3 = Color3.fromRGB(140, 50, 50)
+clearBtn.BorderSizePixel = 0
+clearBtn.Text = "Снять весь выбор"
+clearBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+clearBtn.Font = Enum.Font.GothamMedium
+clearBtn.TextSize = 12
+clearBtn.Parent = bottomBlock
+local clearCorner = Instance.new("UICorner")
+clearCorner.CornerRadius = UDim.new(0, 6)
+clearCorner.Parent = clearBtn
+
+refreshLayout = function()
+    local h = main.AbsoluteSize.Y
+    local bottomH = 84
+    local scrollHeight = math.max(60, h - 242 - bottomH - 12)
+    scroll.Size = UDim2.new(1, -20, 0, scrollHeight)
+
+    bottomBlock.Size = UDim2.new(1, -20, 0, bottomH)
+    bottomBlock.Position = UDim2.new(0, 10, 1, -(bottomH + 6))
+
+    colorLabel.Position = UDim2.new(0, 0, 0, 0)
+    colorPreview.Position = UDim2.new(0, 0, 0, 18)
+    rBox.Position = UDim2.new(0, 60, 0, 18)
+    gBox.Position = UDim2.new(0, 122, 0, 18)
+    bBox.Position = UDim2.new(0, 184, 0, 18)
+end
+
+main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    if refreshLayout then refreshLayout() end
+end)
+task.defer(function() if refreshLayout then refreshLayout() end end)
+
+-- ================== ПИКЕР ЦВЕТА ==================
+local colorPicker = Instance.new("Frame")
+colorPicker.Name = "ColorPicker"
+colorPicker.Size = UDim2.new(0, 340, 0, 330)
+colorPicker.Position = UDim2.new(0.5, -170, 0.5, -165)
+colorPicker.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+colorPicker.BorderSizePixel = 0
+colorPicker.Visible = false
+colorPicker.Active = true
+colorPicker.Draggable = true
+colorPicker.ZIndex = 500
+colorPicker.Parent = screenGui
+
+local cpCorner = Instance.new("UICorner")
+cpCorner.CornerRadius = UDim.new(0, 10)
+cpCorner.Parent = colorPicker
+local cpStroke = Instance.new("UIStroke")
+cpStroke.Color = Color3.fromRGB(120, 120, 160)
+cpStroke.Thickness = 1.5
+cpStroke.Parent = colorPicker
+
+local cpTitle = Instance.new("TextLabel")
+cpTitle.Size = UDim2.new(1, 0, 0, 32)
+cpTitle.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+cpTitle.BorderSizePixel = 0
+cpTitle.Text = "Выбор цвета"
+cpTitle.TextColor3 = Color3.fromRGB(230, 230, 240)
+cpTitle.Font = Enum.Font.GothamBold
+cpTitle.TextSize = 14
+cpTitle.ZIndex = 501
+cpTitle.Parent = colorPicker
+local cpTitleCorner = Instance.new("UICorner")
+cpTitleCorner.CornerRadius = UDim.new(0, 10)
+cpTitleCorner.Parent = cpTitle
+
+local cpNameLabel = Instance.new("TextLabel")
+cpNameLabel.Size = UDim2.new(1, -80, 0, 20)
+cpNameLabel.Position = UDim2.new(0, 10, 0, 40)
+cpNameLabel.BackgroundTransparency = 1
+cpNameLabel.Text = ""
+cpNameLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+cpNameLabel.Font = Enum.Font.GothamMedium
+cpNameLabel.TextSize = 12
+cpNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+cpNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+cpNameLabel.ZIndex = 501
+cpNameLabel.Parent = colorPicker
+
+local cpClose = Instance.new("TextButton")
+cpClose.Size = UDim2.new(0, 26, 0, 26)
+cpClose.Position = UDim2.new(1, -34, 0, 3)
+cpClose.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+cpClose.BorderSizePixel = 0
+cpClose.Text = "X"
+cpClose.TextColor3 = Color3.fromRGB(255, 255, 255)
+cpClose.Font = Enum.Font.GothamBold
+cpClose.TextSize = 13
+cpClose.ZIndex = 502
+cpClose.Parent = colorPicker
+local cpCloseCorner = Instance.new("UICorner")
+cpCloseCorner.CornerRadius = UDim.new(0, 6)
+cpCloseCorner.Parent = cpClose
+
+local PALETTE = {
+    Color3.fromRGB(255, 60, 60), Color3.fromRGB(255, 140, 40),
+    Color3.fromRGB(255, 230, 60), Color3.fromRGB(70, 220, 90),
+    Color3.fromRGB(60, 220, 220), Color3.fromRGB(70, 130, 255),
+    Color3.fromRGB(170, 90, 255), Color3.fromRGB(255, 90, 200),
+    Color3.fromRGB(255, 255, 255), Color3.fromRGB(20, 20, 20),
+    Color3.fromRGB(140, 140, 140), Color3.fromRGB(140, 220, 255),
+    Color3.fromRGB(180, 255, 60), Color3.fromRGB(60, 180, 160),
+    Color3.fromRGB(150, 90, 50), Color3.fromRGB(255, 200, 60),
+}
+
+local paletteFrame = Instance.new("Frame")
+paletteFrame.Size = UDim2.new(1, -20, 0, 70)
+paletteFrame.Position = UDim2.new(0, 10, 0, 66)
+paletteFrame.BackgroundTransparency = 1
+paletteFrame.ZIndex = 501
+paletteFrame.Parent = colorPicker
+local paletteGrid = Instance.new("UIGridLayout")
+paletteGrid.CellSize = UDim2.new(0, 34, 0, 30)
+paletteGrid.CellPadding = UDim2.new(0, 4, 0, 4)
+paletteGrid.Parent = paletteFrame
+
+local cpState = { name = nil, r = 0, g = 0, b = 0 }
+
+local cpPreview = Instance.new("Frame")
+cpPreview.Size = UDim2.new(0, 60, 0, 30)
+cpPreview.Position = UDim2.new(0, 10, 0, 184)
+cpPreview.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+cpPreview.BorderSizePixel = 0
+cpPreview.ZIndex = 501
+cpPreview.Parent = colorPicker
+local cpPreviewCorner = Instance.new("UICorner")
+cpPreviewCorner.CornerRadius = UDim.new(0, 6)
+cpPreviewCorner.Parent = cpPreview
+
+local function makeCPBox(offsetX, label)
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0, 70, 0, 30)
+    box.Position = UDim2.new(0, offsetX, 0, 184)
+    box.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+    box.BorderSizePixel = 0
+    box.Text = "0"
+    box.TextColor3 = Color3.fromRGB(240, 240, 240)
+    box.Font = Enum.Font.GothamMedium
+    box.TextSize = 13
+    box.PlaceholderText = label
+    box.ZIndex = 501
+    box.Parent = colorPicker
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 5)
+    c.Parent = box
+    return box
+end
+
+local cpR = makeCPBox(80, "R")
+local cpG = makeCPBox(155, "G")
+local cpB = makeCPBox(230, "B")
+
+local function updateCPPreview()
+    cpPreview.BackgroundColor3 = Color3.new(cpState.r, cpState.g, cpState.b)
+    cpR.Text = string.format("%.2f", cpState.r)
+    cpG.Text = string.format("%.2f", cpState.g)
+    cpB.Text = string.format("%.2f", cpState.b)
+end
+
+for _, c in ipairs(PALETTE) do
+    local swatch = Instance.new("TextButton")
+    swatch.BackgroundColor3 = c
+    swatch.BorderSizePixel = 0
+    swatch.Text = ""
+    swatch.ZIndex = 502
+    swatch.Parent = paletteFrame
+    local sc = Instance.new("UICorner")
+    sc.CornerRadius = UDim.new(0, 5)
+    sc.Parent = swatch
+    swatch.MouseButton1Click:Connect(function()
+        cpState.r = c.R
+        cpState.g = c.G
+        cpState.b = c.B
+        updateCPPreview()
+    end)
+end
+
+local function readCPInputs()
+    cpState.r = math.clamp(tonumber(cpR.Text) or 0, 0, 1)
+    cpState.g = math.clamp(tonumber(cpG.Text) or 0, 0, 1)
+    cpState.b = math.clamp(tonumber(cpB.Text) or 0, 0, 1)
+    cpPreview.BackgroundColor3 = Color3.new(cpState.r, cpState.g, cpState.b)
+end
+
+cpR.FocusLost:Connect(readCPInputs)
+cpG.FocusLost:Connect(readCPInputs)
+cpB.FocusLost:Connect(readCPInputs)
+
+local cpApply = Instance.new("TextButton")
+cpApply.Size = UDim2.new(0, 150, 0, 32)
+cpApply.Position = UDim2.new(0, 10, 1, -46)
+cpApply.BackgroundColor3 = Color3.fromRGB(60, 160, 80)
+cpApply.BorderSizePixel = 0
+cpApply.Text = "Применить"
+cpApply.TextColor3 = Color3.fromRGB(255, 255, 255)
+cpApply.Font = Enum.Font.GothamBold
+cpApply.TextSize = 14
+cpApply.ZIndex = 501
+cpApply.Parent = colorPicker
+local cpApplyCorner = Instance.new("UICorner")
+cpApplyCorner.CornerRadius = UDim.new(0, 6)
+cpApplyCorner.Parent = cpApply
+
+local cpReset = Instance.new("TextButton")
+cpReset.Size = UDim2.new(0, 150, 0, 32)
+cpReset.Position = UDim2.new(1, -160, 1, -46)
+cpReset.BackgroundColor3 = Color3.fromRGB(140, 80, 40)
+cpReset.BorderSizePixel = 0
+cpReset.Text = "Сброс (общий)"
+cpReset.TextColor3 = Color3.fromRGB(255, 255, 255)
+cpReset.Font = Enum.Font.GothamBold
+cpReset.TextSize = 13
+cpReset.ZIndex = 501
+cpReset.Parent = colorPicker
+local cpResetCorner = Instance.new("UICorner")
+cpResetCorner.CornerRadius = UDim.new(0, 6)
+cpResetCorner.Parent = cpReset
+
+local function openColorPicker(name)
+    cpState.name = name
+    cpNameLabel.Text = "Предмет: " .. name
+    local c = getColorForName(name)
+    cpState.r = c.R
+    cpState.g = c.G
+    cpState.b = c.B
+    updateCPPreview()
+    colorPicker.Visible = true
+end
+
+cpClose.MouseButton1Click:Connect(function()
+    colorPicker.Visible = false
+    cpState.name = nil
+end)
+
+cpApply.MouseButton1Click:Connect(function()
+    if not cpState.name then return end
+    setPerItemColor(cpState.name, cpState.r, cpState.g, cpState.b)
+    updateAllVisuals()
+    if buildList then buildList() end
+    colorPicker.Visible = false
+    cpState.name = nil
+end)
+
+cpReset.MouseButton1Click:Connect(function()
+    if not cpState.name then return end
+    clearPerItemColor(cpState.name)
+    updateAllVisuals()
+    if buildList then buildList() end
+    colorPicker.Visible = false
+    cpState.name = nil
+end)
+
+-- ================== СПИСОК ==================
+local itemRows = {}
+
+local function getCountsByNorm()
+    local counts = {}
+    for _, item in ipairs(collectItems()) do
+        local n = normalize(item.Name)
+        counts[n] = (counts[n] or 0) + 1
+    end
+    return counts
+end
+
+buildList = function()
+    for _, row in pairs(itemRows) do
+        if row.rowFrame then row.rowFrame:Destroy() end
+    end
+    itemRows = {}
+
+    local counts = getCountsByNorm()
+
+    local allNames = {}
+    local seen = {}
+    local function addName(n)
+        local norm = normalize(n)
+        if norm ~= "" and not seen[norm] then
+            seen[norm] = true
+            table.insert(allNames, n)
+        end
+    end
+    for _, n in ipairs(config.knownNames) do addName(n) end
+    for _, item in ipairs(collectItems()) do addName(item.Name) end
+    for _, n in ipairs(MANUAL_ITEMS) do addName(n) end
+
+    local rarityRank = {}
+    for i, r in ipairs(RARITY_ORDER) do rarityRank[r] = i end
+
+    table.sort(allNames, function(a, b)
+        local ra = ITEM_RARITY[normalize(a)]
+        local rb = ITEM_RARITY[normalize(b)]
+        local oa = ra and rarityRank[ra] or 999
+        local ob = rb and rarityRank[rb] or 999
+        if oa ~= ob then return oa < ob end
+        return a:lower() < b:lower()
+    end)
+
+    local filter = searchBox.Text:lower()
+
+    for _, name in ipairs(allNames) do
+        if filter == "" or name:lower():find(filter, 1, true) then
+            local count = counts[normalize(name)] or 0
+            local sel = isSelected(name)
+
+            local rowFrame = Instance.new("Frame")
+            rowFrame.Size = UDim2.new(1, 0, 0, 24)
+            rowFrame.BackgroundTransparency = 1
+            rowFrame.Parent = scroll
+
+            local colorMark = Instance.new("Frame")
+            colorMark.Size = UDim2.new(0, 5, 1, -6)
+            colorMark.Position = UDim2.new(0, 0, 0, 3)
+            colorMark.BackgroundColor3 = getColorForName(name)
+            colorMark.BorderSizePixel = 0
+            colorMark.Parent = rowFrame
+            local cmc = Instance.new("UICorner")
+            cmc.CornerRadius = UDim.new(0, 3)
+            cmc.Parent = colorMark
+
+            local nameBtn = Instance.new("TextButton")
+            nameBtn.Size = UDim2.new(1, -120, 1, 0)
+            nameBtn.Position = UDim2.new(0, 8, 0, 0)
+            nameBtn.BorderSizePixel = 0
+            nameBtn.Font = Enum.Font.Gotham
+            nameBtn.TextSize = 12
+            nameBtn.TextXAlignment = Enum.TextXAlignment.Left
+            nameBtn.Parent = rowFrame
+            local nc = Instance.new("UICorner")
+            nc.CornerRadius = UDim.new(0, 5)
+            nc.Parent = nameBtn
+            local pad = Instance.new("UIPadding")
+            pad.PaddingLeft = UDim.new(0, 8)
+            pad.Parent = nameBtn
+
+            local tpBtn = Instance.new("TextButton")
+            tpBtn.Size = UDim2.new(0, 42, 1, 0)
+            tpBtn.Position = UDim2.new(1, -110, 0, 0)
+            tpBtn.BackgroundColor3 = Color3.fromRGB(180, 120, 40)
+            tpBtn.BorderSizePixel = 0
+            tpBtn.Text = "ТП"
+            tpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            tpBtn.Font = Enum.Font.GothamBold
+            tpBtn.TextSize = 12
+            tpBtn.Parent = rowFrame
+            local tpc = Instance.new("UICorner")
+            tpc.CornerRadius = UDim.new(0, 5)
+            tpc.Parent = tpBtn
+
+            local colorBtn = Instance.new("TextButton")
+            colorBtn.Size = UDim2.new(0, 42, 1, 0)
+            colorBtn.Position = UDim2.new(1, -66, 0, 0)
+            colorBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 140)
+            colorBtn.BorderSizePixel = 0
+            colorBtn.Text = "ЦВЕТ"
+            colorBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            colorBtn.Font = Enum.Font.GothamBold
+            colorBtn.TextSize = 10
+            colorBtn.Parent = rowFrame
+            local cbc = Instance.new("UICorner")
+            cbc.CornerRadius = UDim.new(0, 5)
+            cbc.Parent = colorBtn
+
+            local resetBtn = Instance.new("TextButton")
+            resetBtn.Size = UDim2.new(0, 22, 1, 0)
+            resetBtn.Position = UDim2.new(1, -22, 0, 0)
+            resetBtn.BackgroundColor3 = Color3.fromRGB(90, 60, 60)
+            resetBtn.BorderSizePixel = 0
+            resetBtn.Text = "✕"
+            resetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            resetBtn.Font = Enum.Font.GothamBold
+            resetBtn.TextSize = 12
+            resetBtn.Visible = hasPerItemColor(name)
+            resetBtn.Parent = rowFrame
+            local rbc = Instance.new("UICorner")
+            rbc.CornerRadius = UDim.new(0, 5)
+            rbc.Parent = resetBtn
+
+            if count == 0 then
+                nameBtn.BackgroundColor3 = sel and Color3.fromRGB(50, 70, 110) or Color3.fromRGB(30, 30, 38)
+                nameBtn.TextColor3 = sel and Color3.fromRGB(200, 200, 210) or Color3.fromRGB(150, 150, 160)
+                tpBtn.Visible = false
+            else
+                nameBtn.BackgroundColor3 = sel and Color3.fromRGB(70, 120, 200) or Color3.fromRGB(40, 40, 50)
+                nameBtn.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(230, 230, 240)
+                tpBtn.Visible = true
+            end
+
+            local rarity = ITEM_RARITY[normalize(name)]
+            local rarityTag = rarity and ("[" .. rarity .. "] ") or ""
+            local starTag = hasPerItemColor(name) and "★ " or ""
+            nameBtn.Text = starTag .. rarityTag .. name .. "  (x" .. count .. ")"
+
+            nameBtn.MouseButton1Click:Connect(function()
+                if isSelected(name) then removeSelected(name) else addSelected(name) end
+                buildList()
+                updateAllVisuals()
+            end)
+
+            tpBtn.MouseButton1Click:Connect(function()
+                task.spawn(tweenTeleportAndPickup, name)
+            end)
+
+            colorBtn.MouseButton1Click:Connect(function()
+                openColorPicker(name)
+            end)
+
+            resetBtn.MouseButton1Click:Connect(function()
+                clearPerItemColor(name)
+                updateAllVisuals()
+                buildList()
+            end)
+
+            itemRows[normalize(name)] = {
+                nameBtn = nameBtn,
+                tpBtn = tpBtn,
+                colorBtn = colorBtn,
+                resetBtn = resetBtn,
+                colorMark = colorMark,
+                rowFrame = rowFrame,
+            }
+        end
+    end
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if buildList then buildList() end
+end)
+
+-- ================== КНОПКИ ==================
+toggleBtn.MouseButton1Click:Connect(function()
+    config.enabled = not config.enabled
+    toggleBtn.Text = config.enabled and "Подсвет: ВКЛ" or "Подсвет: ВЫКЛ"
+    toggleBtn.BackgroundColor3 = config.enabled and Color3.fromRGB(60, 160, 80) or Color3.fromRGB(60, 60, 70)
+    saveConfig(config)
+    updateAllVisuals()
+end)
+
+espBtn.MouseButton1Click:Connect(function()
+    config.esp = not config.esp
+    espBtn.Text = config.esp and "ESP: ВКЛ" or "ESP: ВЫКЛ"
+    espBtn.BackgroundColor3 = config.esp and Color3.fromRGB(120, 90, 200) or Color3.fromRGB(60, 60, 70)
+    saveConfig(config)
+    rebuildAllESP()
+    updateAllVisuals()
+end)
+
+namesBtn.MouseButton1Click:Connect(function()
+    config.showNames = not config.showNames
+    namesBtn.Text = config.showNames and "Надписи: ВКЛ" or "Надписи: ВЫКЛ"
+    namesBtn.BackgroundColor3 = config.showNames and Color3.fromRGB(80, 120, 200) or Color3.fromRGB(60, 60, 70)
+    saveConfig(config)
+    rebuildAllESP()
+end)
+
+godBtn.MouseButton1Click:Connect(function()
+    setGodmodeActive(not _G.godmodeActive)
+    godBtn.Text = _G.godmodeActive and "God: ВКЛ" or "God: ВЫКЛ"
+    godBtn.BackgroundColor3 = _G.godmodeActive and Color3.fromRGB(200, 80, 80) or Color3.fromRGB(60, 60, 70)
+end)
+
+refreshBtn.MouseButton1Click:Connect(function()
+    if buildList then buildList() end
+    updateAllVisuals()
+end)
+
+clearBtn.MouseButton1Click:Connect(function()
+    config.selected = {}
+    rebuildSelectedNormalized()
+    saveConfig(config)
+    clearAllVisuals()
+    if buildList then buildList() end
+end)
+
+-- ================== P ==================
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        main.Visible = not main.Visible
+        if main.Visible and buildList then buildList() end
+    end
+end)
+
+-- ================== СТАРТ ==================
+task.spawn(function()
+    task.wait(1)
+    if buildList then buildList() end
+    updateAllVisuals()
+    if config.godmode then
+        setGodmodeActive(true)
+        godBtn.Text = "God: ВКЛ"
+        godBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+    end
+    if config.antiMove then
+        applyAntiMove(true)
+        startAntiMoveLoop()
+        antiMoveBtn.Text = "Anti-Move: ВКЛ"
+        antiMoveBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 160)
+    end
+    if config.speedHack then
+        setSpeedHack(true, "user")
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(3)
+        if main.Visible and buildList then buildList() end
+    end
+end)
+
+print("[ItemHighlight] Готово. P — меню.")
