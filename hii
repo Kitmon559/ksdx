@@ -1,6 +1,6 @@
 -- // LocalScript в StarterPlayer.StarterPlayerScripts
--- // Подсветка + ESP + пикер цвета + Godmode + ТП + Anti-Move + SpeedHack + бинды
--- // FULL FIX: без спама "скорость изменена", HoleGiveMe hold 2 сек
+-- // Полный скрипт: Подсветка + ESP + пикер цвета + Godmode + ТП + Anti-Move + SpeedHack + бинды + AutoFarm
+-- // ФИКС: убраны (""):format(...) → string.format, not(a or b) → раздельные проверки
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -92,19 +92,17 @@ local ESP_SIZES = {
 }
 
 local TP_SPEEDS = {
-    ["Мгновенно"]    = 0.0,
-    ["Очень быстро"] = 0.08,
-    ["Быстро"]       = 0.15,
-    ["Средне"]       = 0.3,
-    ["Медленно"]     = 0.6,
+    ["Мгновенно"]    = 0,
+    ["Очень быстро"] = 500,
+    ["Быстро"]       = 200,
+    ["Средне"]       = 80,
+    ["Медленно"]     = 30,
 }
 
-local TP_OFFSET         = 4
 local TP_E_COUNT        = 3
 local TP_E_DELAY        = 0.1
-local TP_WAIT_LAND      = 0.15
-local TP_WAIT_PICKUP    = 0.4
-local MAX_NEAR_DISTANCE = 3000
+local TP_WAIT_LAND      = 0.05
+local TP_WAIT_PICKUP    = 0.25
 
 local SPEEDHACK_VALUE = 150
 
@@ -145,8 +143,8 @@ if config.enabled == nil then config.enabled = false end
 if config.antiMove == nil then config.antiMove = false end
 if config.speedHack == nil then config.speedHack = false end
 if not config.espSize or not ESP_SIZES[config.espSize] then config.espSize = "Средний" end
-if not config.tpSpeed or not TP_SPEEDS[config.tpSpeed] then config.tpSpeed = "Быстро" end
-if config.customSpeed == nil then config.customSpeed = 0.1 end
+if not config.tpSpeed or not TP_SPEEDS[config.tpSpeed] then config.tpSpeed = "Очень быстро" end
+if config.customSpeed == nil then config.customSpeed = 300 end
 if config.useCustomSpeed == nil then config.useCustomSpeed = false end
 if config.menuWidth == nil then config.menuWidth = 520 end
 if config.menuHeight == nil then config.menuHeight = 620 end
@@ -245,6 +243,7 @@ local espBtn
 local namesBtn
 local menuKeyBtn
 local speedKeyBtn
+local autoFarmBtn
 
 -- ================== HOLE GIVE ME HOOK ==================
 local holeGiveMeBusy = false
@@ -371,7 +370,6 @@ local function stopSpeedHackLoop()
     end
 end
 
--- mode: "user" | "auto" (auto = тихо, без уведомления)
 local function setSpeedHack(state, mode)
     mode = mode or "user"
     config.speedHack = state
@@ -399,7 +397,6 @@ local function setSpeedHack(state, mode)
             end
 
             if h.WalkSpeed ~= SPEEDHACK_VALUE then
-                -- тихое авто-выключение, без уведомления
                 setSpeedHack(false, "auto")
             end
         end)
@@ -451,7 +448,6 @@ player.CharacterAdded:Connect(function(char)
     end
 end)
 
--- синхронизация кнопки с реальным состоянием
 task.spawn(function()
     while true do
         task.wait(0.25)
@@ -650,10 +646,12 @@ RunService.RenderStepped:Connect(function()
         if data.esp then
             local dl = data.esp:FindFirstChild("DistLabel")
             if dl then
-                local ok, pos = pcall(function() return item:GetPivot().Position end)
+                local ok, pos = pcall(function()
+                    return item:GetPivot().Position
+                end)
                 if ok and pos then
                     local dist = (root.Position - pos).Magnitude
-                    dl.Text = ("%d studs"):format(math.floor(dist))
+                    dl.Text = string.format("%d studs", math.floor(dist))
                 end
             end
         end
@@ -701,98 +699,57 @@ local function grabItem(item)
 end
 
 -- ================== ТП ==================
-local function getItemPosition(item, fromPos)
-    if not item or not item.Parent then return nil end
-    if item:IsA("BasePart") then return item.Position, item end
+local function getItemPosition(item)
+    if not item then return nil end
+    if not item.Parent then return nil end
 
-    local parts = {}
-    for _, d in ipairs(item:GetDescendants()) do
-        if d:IsA("BasePart") and d.Transparency < 1 and d.Size.Magnitude > 0.1 then
-            table.insert(parts, d)
+    if item:IsA("BasePart") then
+        return item.Position
+    end
+
+    if item:IsA("Model") then
+        local success, pivot = pcall(function()
+            return item:GetPivot()
+        end)
+        if success then
+            return pivot.Position
         end
     end
 
-    if #parts == 0 then
-        if item.PrimaryPart then return item.PrimaryPart.Position, item.PrimaryPart end
-        local ok, pivot = pcall(function() return item:GetPivot() end)
-        if ok and pivot then return pivot.Position end
-        return nil
-    end
-
-    if fromPos then
-        local best, bestDist = nil, math.huge
-        for _, p in ipairs(parts) do
-            local d = (p.Position - fromPos).Magnitude
-            if d < bestDist then
-                bestDist = d
-                best = p
-            end
-        end
-        return best.Position, best
-    end
-
-    local sum = Vector3.zero
-    for _, p in ipairs(parts) do sum += p.Position end
-    return sum / #parts
+    return nil
 end
 
 local function isValidItem(item)
-    if not item or not item.Parent then return false end
+    if not item then return false end
+    if not item.Parent then return false end
     if not item:IsDescendantOf(SpawnedItems) then return false end
     if not item:IsDescendantOf(workspace) then return false end
 
-    local hasVisible = false
-    if item:IsA("BasePart") then
-        if item.Transparency < 1 and item.Size.Magnitude > 0.1 then hasVisible = true end
-    else
-        for _, d in ipairs(item:GetDescendants()) do
-            if d:IsA("BasePart") and d.Transparency < 1 and d.Size.Magnitude > 0.1 then
-                hasVisible = true
-                break
-            end
-        end
-    end
-    if not hasVisible then return false end
+    local isBasePart = item:IsA("BasePart")
+    local isModel = item:IsA("Model")
+    if not isBasePart and not isModel then return false end
 
     local pos = getItemPosition(item)
     if not pos then return false end
-    if pos.Magnitude < 0.1 then return false end
-    if pos.Y < -500 or pos.Y > 5000 then return false end
+
     return true
 end
 
 local function findRandomItemByName(name)
     local norm = normalize(name)
-    local char = player.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    local origin = root and root.Position or Vector3.new(0, 0, 0)
+    local list = {}
 
-    local nearList, farList = {}, {}
-
-    for _, item in ipairs(collectItems()) do
-        if normalize(item.Name) == norm and isValidItem(item) then
-            local pos, part = getItemPosition(item, origin)
-            if pos then
-                local dist = (origin - pos).Magnitude
-                local entry = { item = item, pos = pos, part = part }
-                if dist <= MAX_NEAR_DISTANCE then
-                    table.insert(nearList, entry)
-                else
-                    table.insert(farList, entry)
-                end
+    local items = collectItems()
+    for _, item in ipairs(items) do
+        if normalize(item.Name) == norm then
+            if isValidItem(item) then
+                table.insert(list, item)
             end
         end
     end
 
-    if #nearList > 0 then
-        local p = nearList[math.random(1, #nearList)]
-        return p.item, p.pos, p.part
-    end
-    if #farList > 0 then
-        local p = farList[math.random(1, #farList)]
-        return p.item, p.pos, p.part
-    end
-    return nil
+    if #list == 0 then return nil end
+    return list[math.random(1, #list)]
 end
 
 local function getCurrentSpeed()
@@ -800,14 +757,16 @@ local function getCurrentSpeed()
         local s = tonumber(config.customSpeed)
         if s and s >= 0 then return s end
     end
-    return TP_SPEEDS[config.tpSpeed] or TP_SPEEDS["Быстро"]
+    return TP_SPEEDS[config.tpSpeed] or TP_SPEEDS["Очень быстро"]
 end
 
 local tweenTpRunning = false
 
 local function tweenTeleportAndPickup(name)
     if tweenTpRunning then
-        if pushNotification then pushNotification("ТП уже идёт", Color3.fromRGB(200, 200, 80)) end
+        if pushNotification then
+            pushNotification("ТП уже идёт", Color3.fromRGB(200, 200, 80))
+        end
         return
     end
 
@@ -824,56 +783,44 @@ local function tweenTeleportAndPickup(name)
 
     tweenTpRunning = true
 
-    local item, itemPos, targetPart
+    local item
     for _ = 1, 5 do
-        item, itemPos, targetPart = findRandomItemByName(name)
-        if item and itemPos then break end
-        item, itemPos, targetPart = nil, nil, nil
+        item = findRandomItemByName(name)
+        if item and isValidItem(item) then break end
+        item = nil
         task.wait(0.1)
     end
 
-    if not item or not itemPos then
+    if not item then
         tweenTpRunning = false
-        if pushNotification then pushNotification(name .. ": нет в мире", Color3.fromRGB(200, 100, 100)) end
+        if pushNotification then
+            pushNotification(name .. ": нет в мире", Color3.fromRGB(200, 100, 100))
+        end
+        return
+    end
+
+    local pos = getItemPosition(item)
+    if not pos then
+        tweenTpRunning = false
+        if pushNotification then
+            pushNotification(name .. ": нет позиции", Color3.fromRGB(200, 100, 100))
+        end
         return
     end
 
     local startPos = root.Position
-    local focusPos = targetPart and targetPart.Position or itemPos
+    local distance = (startPos - pos).Magnitude
+    local speed = getCurrentSpeed()
 
-    local offsetDir = startPos - focusPos
-    offsetDir = Vector3.new(offsetDir.X, 0, offsetDir.Z)
-    if offsetDir.Magnitude < 0.5 then
-        offsetDir = Vector3.new(math.random(-3, 3), 0, math.random(-3, 3))
-        if offsetDir.Magnitude < 0.5 then offsetDir = Vector3.new(3, 0, 3) end
-    end
-    offsetDir = offsetDir.Unit
-
-    local partSize = targetPart and targetPart.Size or Vector3.new(4, 4, 4)
-    local radius = math.max(partSize.X, partSize.Z) * 0.5 + TP_OFFSET
-
-    local targetPos = focusPos + offsetDir * radius
-
-    local ray = Ray.new(targetPos + Vector3.new(0, 20, 0), Vector3.new(0, -200, 0))
-    local hitPart = workspace:FindPartOnRay(ray, char)
-    if hitPart then
-        targetPos = hitPart.Position + Vector3.new(0, 3.5, 0)
-    end
-
-    local lookDir = focusPos - targetPos
-    lookDir = Vector3.new(lookDir.X, 0, lookDir.Z)
-    if lookDir.Magnitude < 0.1 then lookDir = Vector3.new(0, 0, -1) end
-    local targetCF = CFrame.new(targetPos, targetPos + lookDir.Unit)
-
-    local flyTime = getCurrentSpeed()
-
-    if flyTime <= 0.01 then
-        root.CFrame = targetCF
+    if speed <= 0.01 then
+        root.CFrame = CFrame.new(pos)
     else
+        local flyTime = distance / speed
+        if flyTime < 0.05 then flyTime = 0.05 end
         local tweenTo = TweenService:Create(
             root,
-            TweenInfo.new(flyTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { CFrame = targetCF }
+            TweenInfo.new(flyTime, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+            { CFrame = CFrame.new(pos) }
         )
         tweenTo:Play()
         tweenTo.Completed:Wait()
@@ -1001,12 +948,17 @@ SpawnedItems.ChildAdded:Connect(function(item)
     if knownItems[item] then return end
     knownItems[item] = true
 
-    if not (item:IsA("Model") or item:IsA("Tool") or item:IsA("Accessory")
-            or item:IsA("BasePart") or item:IsA("Folder")) then
+    local isModel = item:IsA("Model")
+    local isTool = item:IsA("Tool")
+    local isAcc = item:IsA("Accessory")
+    local isPart = item:IsA("BasePart")
+    local isFolder = item:IsA("Folder")
+
+    if not isModel and not isTool and not isAcc and not isPart and not isFolder then
         return
     end
 
-    if item:IsA("Model") or item:IsA("Tool") or item:IsA("Accessory") or item:IsA("BasePart") then
+    if isModel or isTool or isAcc or isPart then
         rememberName(item.Name)
         local matched = getSelectedOriginal(item.Name)
         if config.enabled and matched then applyVisualsToItem(item, matched) end
@@ -1014,13 +966,20 @@ SpawnedItems.ChildAdded:Connect(function(item)
             pushNotification(item.Name .. "  появился!", Color3.fromRGB(80, 180, 255))
         end
     end
-    task.defer(function() if buildList then buildList() end end)
+
+    task.spawn(function()
+        task.wait()
+        if buildList then buildList() end
+    end)
 end)
 
 SpawnedItems.ChildRemoved:Connect(function(item)
     knownItems[item] = nil
     removeVisualsForItem(item)
-    task.defer(function() if buildList then buildList() end end)
+    task.spawn(function()
+        task.wait()
+        if buildList then buildList() end
+    end)
 end)
 
 -- ================== ANTI-MOVE ==================
@@ -1058,15 +1017,22 @@ end
 
 local function applyAntiMove(state)
     local rw = getRiverWater()
-    if not rw or not rw:IsA("BasePart") then
+    if not rw then
         warn("[ItemHighlight] Anti-Move: RiverWater не найден")
+        return
+    end
+    if not rw:IsA("BasePart") then
+        warn("[ItemHighlight] Anti-Move: RiverWater не BasePart")
         return
     end
     if state then
         riverStartCF = rw.CFrame
         spawnAntiPlatform(rw)
     else
-        if antiPlatform then antiPlatform:Destroy(); antiPlatform = nil end
+        if antiPlatform then
+            antiPlatform:Destroy()
+            antiPlatform = nil
+        end
         riverStartCF = nil
     end
 end
@@ -1077,8 +1043,11 @@ local function startAntiMoveLoop()
         if not config.antiMove then return end
         local rw = getRiverWater()
         if rw and rw:IsA("BasePart") then
-            if riverStartCF and (rw.CFrame.Position - riverStartCF.Position).Magnitude > 0.5 then
-                rw.CFrame = riverStartCF
+            if riverStartCF then
+                local diff = (rw.CFrame.Position - riverStartCF.Position).Magnitude
+                if diff > 0.5 then
+                    rw.CFrame = riverStartCF
+                end
             end
             pcall(function()
                 rw.AssemblyLinearVelocity  = Vector3.zero
@@ -1098,7 +1067,10 @@ local function setAntiMove(state)
             pushNotification("Anti-Move: ВКЛ", Color3.fromRGB(80, 200, 160))
         end
     else
-        if antiMoveConn then antiMoveConn:Disconnect(); antiMoveConn = nil end
+        if antiMoveConn then
+            antiMoveConn:Disconnect()
+            antiMoveConn = nil
+        end
         if pushNotification then
             pushNotification("Anti-Move: ВЫКЛ", Color3.fromRGB(200, 120, 80))
         end
@@ -1238,17 +1210,67 @@ godBtn = makeToggleBtn(0.75, 0.25, config.godmode and "God: ВКЛ" or "God: В�
     Color3.fromRGB(200, 80, 80), config.godmode)
 
 local secondRowY = 110
-speedHackBtn = makeToggleBtn(0, 0.5,
+speedHackBtn = makeToggleBtn(0, 0.33,
     config.speedHack and "SpeedHack: ВКЛ" or "SpeedHack: ВЫКЛ",
     Color3.fromRGB(255, 200, 60), config.speedHack)
 speedHackBtn.Position = UDim2.new(0, 2, 0, secondRowY)
-speedHackBtn.Size = UDim2.new(0.5, -4, 0, 28)
+speedHackBtn.Size = UDim2.new(0.33, -4, 0, 28)
 
-antiMoveBtn = makeToggleBtn(0.5, 0.5,
+antiMoveBtn = makeToggleBtn(0.33, 0.33,
     config.antiMove and "Anti-Move: ВКЛ" or "Anti-Move: ВЫКЛ",
     Color3.fromRGB(80, 200, 160), config.antiMove)
-antiMoveBtn.Position = UDim2.new(0.5, 2, 0, secondRowY)
-antiMoveBtn.Size = UDim2.new(0.5, -4, 0, 28)
+antiMoveBtn.Position = UDim2.new(0.33, 2, 0, secondRowY)
+antiMoveBtn.Size = UDim2.new(0.33, -4, 0, 28)
+
+-- ================== AUTO FARM ==================
+local autoFarmLoaded = false
+
+autoFarmBtn = Instance.new("TextButton")
+autoFarmBtn.Size = UDim2.new(0.33, -4, 0, 28)
+autoFarmBtn.Position = UDim2.new(0.66, 2, 0, secondRowY)
+autoFarmBtn.BackgroundColor3 = Color3.fromRGB(150, 60, 200)
+autoFarmBtn.BorderSizePixel = 0
+autoFarmBtn.Text = "AutoFarm: ЗАГРУЗИТЬ"
+autoFarmBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoFarmBtn.Font = Enum.Font.GothamBold
+autoFarmBtn.TextSize = 11
+autoFarmBtn.Parent = main
+local afCorner = Instance.new("UICorner")
+afCorner.CornerRadius = UDim.new(0, 6)
+afCorner.Parent = autoFarmBtn
+
+autoFarmBtn.MouseButton1Click:Connect(function()
+    if autoFarmLoaded then
+        if pushNotification then
+            pushNotification("AutoFarm уже загружен", Color3.fromRGB(200, 200, 80))
+        end
+        return
+    end
+    autoFarmBtn.Text = "AutoFarm: ..."
+    autoFarmBtn.BackgroundColor3 = Color3.fromRGB(90, 60, 140)
+    task.spawn(function()
+        local ok, err = pcall(function()
+            loadstring(game:HttpGet(
+                'https://raw.githubusercontent.com/Kitmon559/hi/refs/heads/main/hi'
+            ))()
+        end)
+        if ok then
+            autoFarmLoaded = true
+            autoFarmBtn.Text = "AutoFarm: ЗАГРУЖЕН"
+            autoFarmBtn.BackgroundColor3 = Color3.fromRGB(60, 200, 90)
+            if pushNotification then
+                pushNotification("AutoFarm загружен", Color3.fromRGB(80, 220, 120))
+            end
+        else
+            autoFarmBtn.Text = "AutoFarm: ОШИБКА"
+            autoFarmBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+            warn("[AutoFarm] Ошибка: " .. tostring(err))
+            if pushNotification then
+                pushNotification("AutoFarm: ошибка загрузки", Color3.fromRGB(255, 80, 80))
+            end
+        end
+    end)
+end)
 
 speedHackBtn.MouseButton1Click:Connect(function()
     setSpeedHack(not config.speedHack, "user")
@@ -1290,7 +1312,9 @@ menuKeyBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
 menuKeyBtn.Font = Enum.Font.GothamMedium
 menuKeyBtn.TextSize = 11
 menuKeyBtn.Parent = main
-local mkbCorner = Instance.new("UICorner"); mkbCorner.CornerRadius = UDim.new(0, 5); mkbCorner.Parent = menuKeyBtn
+local mkbCorner = Instance.new("UICorner")
+mkbCorner.CornerRadius = UDim.new(0, 5)
+mkbCorner.Parent = menuKeyBtn
 
 speedKeyBtn = Instance.new("TextButton")
 speedKeyBtn.Size = UDim2.new(0.5, -4, 0, 24)
@@ -1302,7 +1326,9 @@ speedKeyBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
 speedKeyBtn.Font = Enum.Font.GothamMedium
 speedKeyBtn.TextSize = 11
 speedKeyBtn.Parent = main
-local skbCorner = Instance.new("UICorner"); skbCorner.CornerRadius = UDim.new(0, 5); skbCorner.Parent = speedKeyBtn
+local skbCorner = Instance.new("UICorner")
+skbCorner.CornerRadius = UDim.new(0, 5)
+skbCorner.Parent = speedKeyBtn
 
 menuKeyBtn.MouseButton1Click:Connect(function()
     listeningFor = "menu"
@@ -1405,10 +1431,10 @@ end
 for i, n in ipairs(SPEED_ORDER) do makeSpeedBtn(i, n) end
 
 local customLabel = Instance.new("TextLabel")
-customLabel.Size = UDim2.new(0, 110, 0, 18)
+customLabel.Size = UDim2.new(0, 160, 0, 18)
 customLabel.Position = UDim2.new(0, 10, 0, 230)
 customLabel.BackgroundTransparency = 1
-customLabel.Text = "Кастом. скорость:"
+customLabel.Text = "Кастом. скорость (studs/sec):"
 customLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
 customLabel.Font = Enum.Font.GothamMedium
 customLabel.TextSize = 11
@@ -1417,11 +1443,11 @@ customLabel.Parent = main
 
 local customSpeedBox = Instance.new("TextBox")
 customSpeedBox.Size = UDim2.new(0, 90, 0, 22)
-customSpeedBox.Position = UDim2.new(0, 130, 0, 228)
+customSpeedBox.Position = UDim2.new(0, 175, 0, 228)
 customSpeedBox.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
 customSpeedBox.BorderSizePixel = 0
-customSpeedBox.Text = tostring(config.customSpeed or 0.1)
-customSpeedBox.PlaceholderText = "сек"
+customSpeedBox.Text = tostring(config.customSpeed or 300)
+customSpeedBox.PlaceholderText = "studs/sec"
 customSpeedBox.TextColor3 = Color3.fromRGB(240, 240, 240)
 customSpeedBox.Font = Enum.Font.GothamMedium
 customSpeedBox.TextSize = 12
@@ -1447,7 +1473,7 @@ customSpeedBox.FocusLost:Connect(function()
         config.customSpeed = val
         config.useCustomSpeed = true
     else
-        customSpeedBox.Text = tostring(config.customSpeed or 0.1)
+        customSpeedBox.Text = tostring(config.customSpeed or 300)
         config.useCustomSpeed = true
     end
     saveConfig(config)
@@ -1458,7 +1484,7 @@ local listLabel = Instance.new("TextLabel")
 listLabel.Size = UDim2.new(1, -20, 0, 16)
 listLabel.Position = UDim2.new(0, 10, 0, 254)
 listLabel.BackgroundTransparency = 1
-listLabel.Text = "Клик — вкл/выкл. ЦВЕТ — свой цвет. ТП — летит к предмету."
+listLabel.Text = "Клик — вкл/выкл. ЦВЕТ — свой цвет. ТП — точно к предмету."
 listLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
 listLabel.Font = Enum.Font.Gotham
 listLabel.TextSize = 11
@@ -1581,7 +1607,8 @@ clearCorner.Parent = clearBtn
 refreshLayout = function()
     local h = main.AbsoluteSize.Y
     local bottomH = 84
-    local scrollHeight = math.max(60, h - 274 - bottomH - 12)
+    local scrollHeight = h - 274 - bottomH - 12
+    if scrollHeight < 60 then scrollHeight = 60 end
     scroll.Size = UDim2.new(1, -20, 0, scrollHeight)
 
     bottomBlock.Size = UDim2.new(1, -20, 0, bottomH)
@@ -1597,7 +1624,11 @@ end
 main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
     if refreshLayout then refreshLayout() end
 end)
-task.defer(function() if refreshLayout then refreshLayout() end end)
+
+task.spawn(function()
+    task.wait()
+    if refreshLayout then refreshLayout() end
+end)
 
 -- ================== ПИКЕР ЦВЕТА ==================
 local colorPicker = Instance.new("Frame")
@@ -1859,8 +1890,10 @@ buildList = function()
     table.sort(allNames, function(a, b)
         local ra = ITEM_RARITY[normalize(a)]
         local rb = ITEM_RARITY[normalize(b)]
-        local oa = ra and rarityRank[ra] or 999
-        local ob = rb and rarityRank[rb] or 999
+        local oa = 999
+        local ob = 999
+        if ra then oa = rarityRank[ra] or 999 end
+        if rb then ob = rarityRank[rb] or 999 end
         if oa ~= ob then return oa < ob end
         return a:lower() < b:lower()
     end)
@@ -1956,12 +1989,18 @@ buildList = function()
             end
 
             local rarity = ITEM_RARITY[normalize(name)]
-            local rarityTag = rarity and ("[" .. rarity .. "] ") or ""
-            local starTag = hasPerItemColor(name) and "★ " or ""
+            local rarityTag = ""
+            if rarity then rarityTag = "[" .. rarity .. "] " end
+            local starTag = ""
+            if hasPerItemColor(name) then starTag = "★ " end
             nameBtn.Text = starTag .. rarityTag .. name .. "  (x" .. count .. ")"
 
             nameBtn.MouseButton1Click:Connect(function()
-                if isSelected(name) then removeSelected(name) else addSelected(name) end
+                if isSelected(name) then
+                    removeSelected(name)
+                else
+                    addSelected(name)
+                end
                 buildList()
                 updateAllVisuals()
             end)
