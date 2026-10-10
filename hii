@@ -1,6 +1,7 @@
 -- // LocalScript в StarterPlayer.StarterPlayerScripts
--- // Полный скрипт: Подсветка + ESP + пикер цвета + Godmode + ТП + Anti-Move + SpeedHack + бинды + AutoFarm
--- // ФИКС: убраны (""):format(...) → string.format, not(a or b) → раздельные проверки
+-- // Подсветка + ESP + пикер цвета + Godmode + ТП + Anti-Move + SpeedHack + бинды + AutoFarm
+-- // FULL: Cosmic редкость + новые предметы (Giant Bone, Bottomless Box, Snowy Guard Booth,
+-- //       Whisper Flower, Frozen Spaghetti, Glowing Star)
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -37,13 +38,14 @@ end
 
 -- ================== РЕДКОСТИ ==================
 local RARITY_COLORS = {
-    ["Exotic"]    = Color3.fromRGB( 60, 180, 255),
-    ["Mythic"]    = Color3.fromRGB(255,  60,  60),
-    ["Legendary"] = Color3.fromRGB(255, 220,  40),
-    ["Epic"]      = Color3.fromRGB(170,  90, 255),
-    ["Rare"]      = Color3.fromRGB( 60, 120, 255),
-    ["Uncommon"]  = Color3.fromRGB( 80, 200,  80),
-    ["Common"]    = Color3.fromRGB(160, 160, 160),
+    ["Cosmic"]    = Color3.fromRGB( 90,  30, 160),  -- тёмно-фиолетовый
+    ["Exotic"]    = Color3.fromRGB( 60, 180, 255),  -- голубой
+    ["Mythic"]    = Color3.fromRGB(255,  60,  60),  -- красный
+    ["Legendary"] = Color3.fromRGB(255, 220,  40),  -- жёлтый
+    ["Epic"]      = Color3.fromRGB(170,  90, 255),  -- фиолетовый
+    ["Rare"]      = Color3.fromRGB( 60, 120, 255),  -- синий
+    ["Uncommon"]  = Color3.fromRGB( 80, 200,  80),  -- зелёный
+    ["Common"]    = Color3.fromRGB(160, 160, 160),  -- серый
 }
 
 local ITEM_RARITY = {}
@@ -53,12 +55,18 @@ local function reg(rarity, names)
     end
 end
 
-reg("Exotic",    {"Telephone Booth", "Couch", "Chilythrily"})
+reg("Cosmic",    {"Bottomless Box", "BottomlessBox"})
+reg("Exotic",    {"Telephone Booth", "Couch", "Chilythrily",
+                  "Snowy Guard Booth", "SnowyGuardBooth",
+                  "Whisper Flower", "WhisperFlower"})
 reg("Mythic",    {"Vending Machine", "Tape", "Shopping Cart",
                   "Roadrolleeeeerr", "ROADROLLEEEEERR", "Microwave",
                   "Magnet Block", "MagnetBlock", "Hot Bog Stand",
                   "Hot Dog Stand", "HotDogStand", "Glitchy Butter Blok",
-                  "Glitchy Butter Block", "CRT TV", "CRTtv"})
+                  "Glitchy Butter Block", "CRT TV", "CRTtv",
+                  "Giant Bone", "GiantBone",
+                  "Frozen Spaghetti", "FrozenSpaghetti",
+                  "Glowing Star", "GlowingStar"})
 reg("Legendary", {"Water Cooler", "Traffic Cone", "Pigeon",
                   "Office Chair", "Fridge", "Carp", "Bus Stop", "BusStop"})
 reg("Epic",      {"Iron Safe", "IronSafe", "Barrier", "Aquarium"})
@@ -67,7 +75,7 @@ reg("Rare",      {"Wallet", "Iron Ladder", "iron_ladder",
 reg("Uncommon",  {"Crate", "Bench", "Beach Chair", "Beach chair", "Beachchair"})
 reg("Common",    {"Trash Box", "TrashBox", "Calendars", "Battery"})
 
-local RARITY_ORDER = {"Exotic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common"}
+local RARITY_ORDER = {"Cosmic", "Exotic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common"}
 
 local function getRarityColor(name)
     local r = ITEM_RARITY[normalize(name)]
@@ -83,6 +91,9 @@ local MANUAL_ITEMS = {
     "Beach chair", "TrashBox", "Bench", "Tape", "BIG item", "Chocolate bar",
     "iron_ladder", "Anvil", "Microwave", "Couch", "Shopping Cart",
     "Hot Dog Stand", "CRT TV",
+    "Giant Bone", "Bottomless Box", "Snowy Guard Booth",
+    "Whisper Flower", "Frozen Spaghetti", "Glowing Star",
+    "Magnet Block", "Bus Stop",
 }
 
 local ESP_SIZES = {
